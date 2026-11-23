@@ -1,0 +1,6 @@
+# Leftover zcf-generated Codex prompts (zcf removed 2026-11-18)
+.codex/prompts/git-cleanBranches.md
+.codex/prompts/git-commit.md
+.codex/prompts/git-rollback.md
+.codex/prompts/git-worktree.md
+.codex/prompts/workflow.md

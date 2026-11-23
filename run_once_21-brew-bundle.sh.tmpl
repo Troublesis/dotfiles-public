@@ -1,0 +1,35 @@
+{{- if eq .chezmoi.os "darwin" -}}
+#!/bin/bash
+set -uo pipefail
+
+# Soft fail-mode: a single broken cask/formula must not abort chezmoi apply.
+# `brew bundle` exits non-zero if ANY item fails (e.g. a cask that needs sudo,
+# a renamed formula, a linkage error). We log failures and continue so the
+# rest of the bundle still installs; the operator can re-run failing items.
+brewfile="$HOME/.zsh/.Brewfile"
+
+if [ ! -f "$brewfile" ]; then
+  echo "[SKIP] No Brewfile at $brewfile"
+  exit 0
+fi
+
+if ! command -v brew >/dev/null 2>&1; then
+  echo "[SKIP] brew not on PATH — run run_once_20-macos-setup.sh first"
+  exit 0
+fi
+
+echo "[INFO] Running brew bundle (continue-on-failure)..."
+# --no-lock: skip the slow, machine-specific lockfile; we don't commit it.
+# `|| true` so a non-zero bundle exit does not fail this script.
+brew bundle --no-lock --file "$brewfile" || {
+  rc=$?
+  echo "[WARN] brew bundle exited $rc — some items failed. Re-run manually:"
+  echo "    brew bundle install --file \"$brewfile\""
+  echo "  Common fixes:"
+  echo "    brew link --overwrite ruby        # 'Formula X needs to be linked'"
+  echo "    brew reinstall --cask <name>       # stale cask receipt / install error"
+  exit 0
+}
+
+echo "[OK] brew bundle complete"
+{{- end -}}

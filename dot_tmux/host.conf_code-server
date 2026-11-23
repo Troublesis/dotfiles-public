@@ -1,0 +1,3 @@
+# Host: code-server (remote coding container)
+# The shared status-bar guard for MOSHI_CLIENT lives in
+# private_dot_tmux.conf.tmpl and is applied on every host.

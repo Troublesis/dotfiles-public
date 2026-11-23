@@ -1,0 +1,157 @@
+# Combined Brewfile — managed by chezmoi.
+# Common packages for all Darwin hosts, plus host-class conditionals.
+
+# Taps
+tap "rjyo/moshi"     # moshi-hook
+tap "tw93/tap"       # mole (shadows homebrew/core/mole)
+
+# ── CLI tools (common) ──────────────────────────────────────────────
+# Optional tools (agent-browser, lazygit, lazydocker, codex, aicommit2, yadm, antigravity, vscode + extensions)
+# are chosen via the TUI picker in run_once_25-optional-tools.sh — NOT here.
+brew "age"           # required: decrypts chezmoi encrypted_dot_* secrets
+brew "asciinema"
+brew "autoconf"
+brew "automake"
+brew "bat"
+brew "cocoapods"
+brew "convmv"
+brew "coreutils"
+brew "dust"
+brew "duti"
+brew "eza"
+brew "fd"
+brew "ffmpeg-full"
+brew "fzf"
+brew "gettext"
+brew "gh"            # also installed by run_once_20-macos-setup.sh — declared here for bundle idempotency
+brew "git"
+brew "git-lfs"
+brew "gitleaks"
+brew "gnupg"
+brew "gpac"
+brew "imagemagick-full"
+brew "jj"
+brew "jq"
+brew "libgcrypt"
+brew "libtool"
+brew "mas"
+brew "mole" # cleanup tool
+brew "mosh"
+brew "moshi-hook"
+brew "neovim"
+brew "nmap"
+brew "node"
+brew "pkgconf"
+brew "pnpm"
+brew "poppler"
+brew "python@3.11"
+brew "resvg"
+brew "ripgrep"
+brew "rmlint"
+brew "ruby"
+brew "rust"
+brew "sevenzip"
+brew "shellcheck"
+brew "starship"
+brew "supervisor"
+brew "tea"           # Gitea CLI — config managed in private_dot_config/private_tea/
+brew "telnet"
+brew "tmux"
+brew "transmission-cli"
+brew "tree"
+brew "uv"
+brew "wget"
+brew "xclip"
+brew "xsel"
+brew "yank"
+brew "yarn"
+brew "yazi"
+brew "yt-dlp"
+brew "zoxide"
+
+# ── Optional CLI tools (commented — uncomment to install) ───────────
+# Installed on some hosts but not required by the core setup.
+# brew "deno"
+# brew "go"
+# brew "helix"
+# brew "llmfit"
+# brew "merve"
+# brew "summarize"
+# brew "whisper-cpp"
+# brew "zellij"
+
+# ── GUI apps (common) ───────────────────────────────────────────────
+cask "bettertouchtool"
+cask "bruno"
+cask "cherry-studio"
+cask "font-jetbrains-mono"
+cask "font-meslo-lg-nerd-font"
+cask "ghostty"
+cask "hiddenbar"
+cask "iina"
+cask "keka"
+# cask "keyboardholder"
+cask "input-source-pro"
+cask "kitty"
+cask "windows-app"
+cask "qlmarkdown"
+cask "quicklook-video"
+cask "stats"
+cask "sublime-text"
+cask "syncthing-app"
+cask "vnc-viewer"
+
+# ── Optional GUI apps (commented — uncomment to install) ────────────
+# Installed on some hosts but not part of the common baseline.
+# cask "activitywatch"
+# cask "cardinal-search"
+# cask "chromedriver"
+# cask "comfyui"
+# cask "cursor"
+# cask "forklift"
+# cask "maccy"
+# cask "macfuse"
+
+# ── Host-specific ───────────────────────────────────────────────────
+{{- if eq .hostclass "mac-studio" }}
+
+# CLI tools (mac-studio)
+brew "btop"
+brew "cloudflared"
+brew "docker"
+brew "docker-compose"
+brew "hf"
+brew "tailscale"
+brew "thefuck"
+
+# GUI apps (mac-studio)
+# cask "pearcleaner"
+cask "appcleaner"
+cask "dayflow"
+cask "db-browser-for-sqlite"
+cask "lm-studio"
+cask "losslesscut"
+cask "mediainfo"
+cask "miniconda"
+cask "obsidian"
+cask "ogdesign-eagle"
+cask "ollama-app"
+cask "orbstack"
+cask "picgo"
+cask "productdevbook/tap/portkiller"
+cask "scroll-reverser"
+cask "tailscale-app"
+cask "utm"
+
+# VSCode extensions (mac-studio): now optional — chosen via
+# run_once_25-optional-tools.sh picker, not declared here.
+
+{{- else if eq .hostclass "macbook" }}
+
+# CLI tools (macbook)
+
+
+# GUI apps (macbook)
+
+
+{{- end }}

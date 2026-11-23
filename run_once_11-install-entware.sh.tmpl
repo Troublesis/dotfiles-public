@@ -1,0 +1,17 @@
+{{- if eq .hostclass "nas" -}}
+#!/bin/bash
+set -euo pipefail
+
+command -v opkg >/dev/null 2>&1 && exit 0
+
+# Only run on Synology NAS
+[[ "$(uname -a)" == *synology* ]] || exit 0
+
+echo "[INFO] Detected Synology NAS — installing Entware (opkg)..."
+wget -O - http://bin.entware.net/x64-k3.2/installer/generic.sh | sudo /bin/sh
+
+profile="$HOME/.profile"
+if ! grep -q '/opt/bin' "$profile" 2>/dev/null; then
+  printf '\n# Entware (opkg) paths\nexport PATH="$PATH:/opt/bin:/opt/sbin"\n' >> "$profile"
+fi
+{{- end -}}

@@ -1,0 +1,4 @@
+#!/bin/zsh
+# Default host settings
+
+is_nas_host && alias code="docker exec -it code-server /bin/zsh"

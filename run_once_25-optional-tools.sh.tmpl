@@ -1,0 +1,362 @@
+{{- if and (or (eq .chezmoi.os "darwin") (eq .chezmoi.os "linux")) (ne .hostclass "nas") -}}
+#!/bin/bash
+# Optional-tools picker — cross-platform (Darwin + Linux).
+# Lets the user opt into tools that are NOT in the core Brewfile / package list:
+#   agent-browser, VSCode (+ extensions), lazygit, lazydocker, codex, aicommit2,
+#   yadm, antigravity, cleanshot (pinned 4.8.10), voicestudio.
+#
+# Zero external TUI deps: whiptail/dialog/gum don't exist on a fresh Mac
+# (pre-brew), so this uses a plain bash numbered menu (range syntax supported),
+# matching the style of pick_optional_packages() in setup.sh.
+#
+# Idempotent: a persisted selection in $OPTIONAL_TOOLS_FILE is honoured on
+# re-runs. Non-interactive: honour CHEZMOI_OPTIONAL_TOOLS (space-separated keys)
+# or install nothing. Set RECONFIGURE=1 to re-pick.
+set -uo pipefail
+
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap"
+OPTIONAL_TOOLS_FILE="$STATE_DIR/optional-tools.list"
+
+# ── Catalog ──────────────────────────────────────────────────────────────────
+# Format: "key|short-label|description". Keys are matched in install dispatch.
+CATALOG=(
+  "agent-browser|agent-browser|Vercel browser-automation CLI for AI agents"
+  "vscode|VSCode + exts|Visual Studio Code editor + managed extensions"
+  "lazygit|lazygit|Terminal UI for git"
+  "lazydocker|lazydocker|Terminal UI for Docker"
+  "codex|codex|OpenAI Codex terminal coding agent"
+  "herdr|herdr|Agent multiplexer that lives in your terminal"
+  "tea|tea (Gitea CLI)|Command-line tool to interact with Gitea servers"
+  "btop|btop|Resource monitor (C++ continuation of bashtop/bpytop)"
+  "ncdu|ncdu|Disk usage analyzer (NCurses)"
+  "aicommit2|aicommit2|AI commit-message CLI (config in ~/.config/aicommit2 is always deployed)"
+  "yadm|yadm|Yet Another Dotfiles Manager (legacy; dotfiles are managed by chezmoi)"
+  "antigravity|antigravity|Google Antigravity agentic IDE (macOS only)"
+  "cleanshot|CleanShot X 4.8.10|Screen capture tool, pinned to licensed 4.8.10 (macOS only)"
+  "voicestudio|VoiceStudio|Local voice cloning/dubbing/dictation studio, ElevenLabs alternative (macOS only)"
+)
+
+# VSCode extensions (was the old Brewfile block) — installed via `code --install-extension`.
+VSCODE_EXTENSIONS=(
+  "alexcvzz.vscode-sqlite"
+  "anthropic.claude-code"
+  "bierner.markdown-preview-github-styles"
+  "davidanson.vscode-markdownlint"
+  "esbenp.prettier-vscode"
+  "gruntfuggly.todo-tree"
+  "mechatroner.rainbow-csv"
+  "ms-python.python"
+  "ms-python.vscode-pylance"
+  "ms-vscode-remote.remote-ssh"
+  "ms-vscode-remote.remote-ssh-edit"
+  "ms-vscode.makefile-tools"
+  "pkief.material-icon-theme"
+  "redhat.vscode-yaml"
+  "tamasfe.even-better-toml"
+  "vscode-icons-team.vscode-icons"
+  "ying.jsbox"
+)
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+log_info() { printf '[INFO] %s\n' "$*"; }
+log_ok()   { printf '\033[32m[OK]\033[0m %s\n' "$*"; }
+log_warn() { printf '\033[33m[WARN]\033[0m %s\n' "$*"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+npm_install_global() {
+  have npm || { log_warn "npm missing — skipping $1"; return 0; }
+  if npm install -g "$1"; then log_ok "npm: $1"; else log_warn "npm install failed: $1"; fi
+}
+
+# install_<key> dispatches per OS. Each is idempotent (skip if binary/cask present).
+install_agent-browser() {
+  case "$(uname -s)" in
+    Darwin) have agent-browser || brew install agent-browser ;;
+    Linux)  npm_install_global agent-browser ;;
+  esac
+}
+
+install_vscode() {
+  local code_bin
+  case "$(uname -s)" in
+    Darwin)
+      brew install --cask visual-studio-code || log_warn "vscode cask install failed"
+      code_bin="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+      ;;
+    Linux)
+      # Prefer Snap on distros that have it; else the tarball from code.visualstudio.com.
+      if have snap; then
+        sudo snap install code --classic 2>/dev/null || log_warn "snap install code failed"
+      else
+        log_warn "Linux VSCode install needs snap or manual setup — skipping editor, trying extensions if 'code' is on PATH"
+      fi
+      code_bin="code"
+      ;;
+  esac
+  have "$code_bin" || [ "$code_bin" = "code" ] || { log_warn "'code' CLI not found — skipping extensions"; return 0; }
+  log_info "Installing ${#VSCODE_EXTENSIONS[@]} VSCode extensions..."
+  local ext
+  for ext in "${VSCODE_EXTENSIONS[@]}"; do
+    if "$code_bin" --install-extension "$ext" >/dev/null 2>&1; then log_ok "ext: $ext"; else log_warn "ext failed: $ext"; fi
+  done
+}
+
+install_lazygit() {
+  case "$(uname -s)" in
+    Darwin) have lazygit || brew install lazygit ;;
+    Linux)  have lazygit || npm_install_global lazygit ;;
+  esac
+}
+
+install_lazydocker() {
+  case "$(uname -s)" in
+    Darwin) have lazydocker || brew install lazydocker ;;
+    Linux)  have lazydocker || log_warn "lazydocker on Linux: install from github.com/jesseduffield/lazydocker/releases" ;;
+  esac
+}
+
+install_codex() {
+  case "$(uname -s)" in
+    Darwin) have codex || brew install --cask codex ;;
+    Linux)  npm_install_global @openai/codex ;;
+  esac
+}
+
+install_herdr() {
+  case "$(uname -s)" in
+    Darwin) have herdr || brew install herdr ;;
+    Linux)  have herdr || log_warn "herdr on Linux: install from herdr.dev (brew not available)" ;;
+  esac
+}
+
+install_tea() {
+  case "$(uname -s)" in
+    Darwin) have tea || brew install tea ;;
+    Linux)  have tea || log_warn "tea on Linux: install from gitea.com/gitea/tea/releases" ;;
+  esac
+}
+
+install_aicommit2() {
+  # Cross-platform via npm (no brew formula on Linux); needs npm on PATH.
+  have aicommit2 || npm_install_global aicommit2
+}
+
+install_yadm() {
+  case "$(uname -s)" in
+    Darwin) have yadm || brew install yadm ;;
+    Linux)  have yadm || log_warn "yadm on Linux: install via your package manager (e.g. apt install yadm)" ;;
+  esac
+}
+
+install_antigravity() {
+  case "$(uname -s)" in
+    Darwin) brew install --cask antigravity || log_warn "antigravity cask install failed" ;;
+    Linux)  log_warn "antigravity: macOS only — skipping" ;;
+  esac
+}
+
+# CleanShot X is pinned to 4.8.10 (the licensed version; upstream cask only ships 5.x).
+# The cask file ships in ~/.zsh/casks and is served from a local tap.
+install_cleanshot() {
+  [ "$(uname -s)" = "Darwin" ] || { log_warn "cleanshot: macOS only — skipping"; return 0; }
+  have brew || { log_warn "brew missing — skipping cleanshot"; return 0; }
+  brew list --cask cleanshot-4-8-10 >/dev/null 2>&1 && { log_ok "cleanshot 4.8.10 already installed"; return 0; }
+  if brew list --cask cleanshot >/dev/null 2>&1; then
+    log_warn "upstream 'cleanshot' cask (5.x) is installed — run: brew uninstall --cask cleanshot, then re-run"
+    return 0
+  fi
+  local tap="troublesis/pinned" src="$HOME/.zsh/casks/cleanshot-4-8-10.rb" dir
+  [ -f "$src" ] || { log_warn "missing $src — skipping cleanshot"; return 0; }
+  brew tap | grep -qx "$tap" || brew tap-new --no-git "$tap" >/dev/null || { log_warn "could not create tap $tap"; return 0; }
+  brew trust "$tap" >/dev/null 2>&1 || true  # newer brew refuses untrusted taps
+  dir="$(brew --repository "$tap")/Casks"
+  mkdir -p "$dir" && cp "$src" "$dir/"
+  brew install --cask "$tap/cleanshot-4-8-10" || log_warn "cleanshot 4.8.10 install failed"
+}
+
+# VoiceStudio (debpalash/VoiceStudio, AGPL-3.0) ships as a cask in a third-party tap.
+# Newer brew refuses untrusted taps/casks, so trust just this cask. Local engines need Apple Silicon.
+install_voicestudio() {
+  [ "$(uname -s)" = "Darwin" ] || { log_warn "voicestudio: macOS only — skipping"; return 0; }
+  have brew || { log_warn "brew missing — skipping voicestudio"; return 0; }
+  brew list --cask voicestudio >/dev/null 2>&1 && { log_ok "voicestudio already installed"; return 0; }
+  brew tap | grep -qx "debpalash/tap" || brew tap debpalash/tap || { log_warn "could not tap debpalash/tap"; return 0; }
+  brew trust --cask debpalash/tap/voicestudio >/dev/null 2>&1 || true
+  brew install --cask debpalash/tap/voicestudio || log_warn "voicestudio cask install failed"
+}
+
+install_btop() {
+  case "$(uname -s)" in
+    Darwin) have btop || brew install btop ;;
+    Linux)  have btop || log_warn "btop on Linux: add 'btop' to ~/.config/chezmoi-bootstrap/optional-packages.list, then run 'chezmoi apply'" ;;
+  esac
+}
+
+install_ncdu() {
+  case "$(uname -s)" in
+    Darwin) have ncdu || brew install ncdu ;;
+    Linux)  have ncdu || log_warn "ncdu on Linux: add 'ncdu' to ~/.config/chezmoi-bootstrap/optional-packages.list, then run 'chezmoi apply'" ;;
+  esac
+}
+
+# ── Selection persistence ────────────────────────────────────────────────────
+write_selection() {
+  mkdir -p "$STATE_DIR"
+  printf '# Optional tools selected via run_once_25-optional-tools.sh\n' > "$OPTIONAL_TOOLS_FILE"
+  printf '# One key per line. Delete this file or set RECONFIGURE=1 to re-pick.\n' >> "$OPTIONAL_TOOLS_FILE"
+  local k
+  for k in "$@"; do printf '%s\n' "$k" >> "$OPTIONAL_TOOLS_FILE"; done
+  log_ok "Wrote $OPTIONAL_TOOLS_FILE"
+}
+
+read_selection() {
+  [ -f "$OPTIONAL_TOOLS_FILE" ] || return 0
+  grep -vE '^\s*(#|$)' "$OPTIONAL_TOOLS_FILE" 2>/dev/null || true
+}
+
+# ── Index-spec parser (ranges / commas / 'all') ──────────────────────────────
+parse_index_spec() {
+  local raw="$1" count="$2"
+  local lower
+  lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ')"
+  lower="${lower# }"; lower="${lower% }"
+  case "$lower" in
+    ''|none|n|no|skip|0) return 0 ;;
+    all|a|'*')
+      local i; for ((i = 1; i <= count; i++)); do echo "$i"; done; return 0 ;;
+  esac
+  local norm tok lo hi i swap
+  norm=$(printf '%s' "$raw" | tr ',' ' ' | tr -s '[:space:]' ' ')
+  norm="${norm# }"; norm="${norm% }"
+  for tok in $norm; do
+    if [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      lo=${BASH_REMATCH[1]}; hi=${BASH_REMATCH[2]}
+      (( lo > hi )) && { swap=$lo; lo=$hi; hi=$swap; }
+      for ((i = lo; i <= hi; i++)); do
+        (( i >= 1 && i <= count )) && echo "$i" || printf '  \xe2\x9a\xa0 ignoring out-of-range: %d\n' "$i" >&2
+      done
+    elif [[ "$tok" =~ ^[0-9]+$ ]]; then
+      i=$tok
+      (( i >= 1 && i <= count )) && echo "$i" || printf '  \xe2\x9a\xa0 ignoring out-of-range: %d\n' "$i" >&2
+    else
+      printf '  \xe2\x9a\xa0 ignoring invalid token: %q\n' "$tok" >&2
+    fi
+  done
+}
+
+valid_key() {
+  local needle="$1" entry key
+  for entry in "${CATALOG[@]}"; do
+    IFS='|' read -r key _ _ <<<"$entry"
+    [ "$key" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+# ── Decide selection ─────────────────────────────────────────────────────────
+pick() {
+  # 1. Idempotent: reuse existing selection unless reconfiguring.
+  if [ -f "$OPTIONAL_TOOLS_FILE" ] && [ "${RECONFIGURE:-0}" != "1" ]; then
+    log_info "Optional tools already chosen ($OPTIONAL_TOOLS_FILE). Set RECONFIGURE=1 to re-pick."
+    return 0
+  fi
+
+  local count=${#CATALOG[@]}
+
+  # 2. Non-interactive: honour CHEZMOI_OPTIONAL_TOOLS env var (space-separated keys).
+  if [ "${NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-0}" = "1" ] || [ ! -t 0 ]; then
+    local env_keys="${CHEZMOI_OPTIONAL_TOOLS:-}"
+    if [ -n "$env_keys" ]; then
+      local k valid=()
+      for k in $env_keys; do
+        if valid_key "$k"; then valid+=("$k"); else log_warn "Unknown optional tool key: $k"; fi
+      done
+      write_selection "${valid[@]}"
+    else
+      log_info "Non-interactive — no optional tools (set CHEZMOI_OPTIONAL_TOOLS to choose)"
+      write_selection
+    fi
+    return 0
+  fi
+
+  # 3. Interactive TUI.
+  echo ""
+  printf '\033[1m════════════════ Optional tools (%s) ════════════════\033[0m\n' "$(uname -s)"
+  local i=0 entry key label desc
+  for entry in "${CATALOG[@]}"; do
+    IFS='|' read -r key label desc <<<"$entry"
+    i=$((i + 1))
+    printf "  %2d) %-16s %s\n" "$i" "$label" "$desc"
+  done
+  echo ""
+  echo "Enter numbers to install. Examples:"
+  echo "    1 2 4        individual items"
+  echo "    1,3,5        commas work too"
+  echo "    1-5          range 1 through 5"
+  echo "    all          install everything"
+  echo "    (empty)      install nothing"
+  echo ""
+
+  local raw=""
+  read -r -p "Selection: " raw || raw=""
+
+  local warnings_file sorted
+  warnings_file=$(mktemp 2>/dev/null || echo "/tmp/.opttools_warn.$$")
+  sorted=$(parse_index_spec "$raw" "$count" 2>"$warnings_file" | sort -un)
+  [ -s "$warnings_file" ] && cat "$warnings_file"
+  rm -f "$warnings_file"
+
+  local -a sel=()
+  [ -n "$sorted" ] && while IFS= read -r line; do sel+=("$line"); done <<<"$sorted"
+
+  local -a keys=()
+  if (( ${#sel[@]} > 0 )); then
+    local n
+    for n in "${sel[@]}"; do
+      IFS='|' read -r key _ _ <<<"${CATALOG[n-1]}"
+      keys+=("$key")
+    done
+  fi
+
+  if (( ${#keys[@]} == 0 )); then
+    printf "  \xe2\x86\x92 \033[2m(no optional tools selected)\033[0m\n"
+    write_selection
+  else
+    printf "  \xe2\x86\x92 installing: \033[36m%s\033[0m\n" "${keys[*]}"
+    write_selection "${keys[@]}"
+  fi
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+pick
+
+# Install whatever is now selected (from file — survives non-interactive path too).
+selected=$(read_selection)
+if [ -z "$selected" ]; then
+  log_info "No optional tools selected."
+  exit 0
+fi
+
+for key in $selected; do
+  case "$key" in
+    agent-browser) install_agent-browser ;;
+    vscode)        install_vscode ;;
+    lazygit)       install_lazygit ;;
+    lazydocker)    install_lazydocker ;;
+    codex)         install_codex ;;
+    herdr)         install_herdr ;;
+    tea)           install_tea ;;
+    btop)          install_btop ;;
+    ncdu)          install_ncdu ;;
+    aicommit2)     install_aicommit2 ;;
+    yadm)          install_yadm ;;
+    antigravity)   install_antigravity ;;
+    cleanshot)     install_cleanshot ;;
+    voicestudio)   install_voicestudio ;;
+    *)           log_warn "Unknown key in $OPTIONAL_TOOLS_FILE: $key" ;;
+  esac
+done
+
+log_ok "Optional tools pass complete."
+{{- end -}}

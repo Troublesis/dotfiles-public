@@ -1,0 +1,87 @@
+{
+	"theme": "Adaptive.sublime-theme",
+	"color_scheme": "Packages/User/Aura Theme Color Scheme/aura-theme.tmTheme",
+	"font_size": 14,
+	// "font_face": "MesloLGS NF",
+	"font_face": "JetbrainsMono Nerd Font",
+	// "font_face": "Fira Code Nerd Font",
+	"fallback_font_face": "MesloLGS NF",
+	"font_options": ["ss01", "ss02", "ss03", "ss04", "ss05", "ss06", "ss07"],
+	// "line_height": 20,                // 根据需要调整行高
+	"translate_tabs_to_spaces": true,
+	"highlight_line": true,
+	"line_padding_bottom": 5,
+	"line_padding_top": 5,
+	"trim_trailing_white_space_on_save": true,
+	"word_wrap": false,
+	// "margin": 20,
+	"caret_extra_bottom": 0,
+	"caret_extra_top": 0,
+	"hide_tab_scrolling_buttons": true,
+	"autopep8_options": [
+		"--ignore=E402",  // 可选：根据需要添加其他选项
+		"--select=W293",  // 可选：根据需要添加其他选项
+	],
+	"auto_format_on_save": true,
+	"auto_format_syntax": true,
+	"auto_format_style": "autopep8",
+	"save_on_focus_lost": true,
+	"index_files": true,
+	"highlight_modified_tabs": true,
+	"neovintageous_build_version": 13200,
+	"vintageous_use_ctrl_keys": false,
+	"caret_style": "phase", // 可以是 "wide", "blocks", "phase", "smooth" 或 "solid"
+	"caret_extra_width": 2, // 控制光标额外宽度
+	"caret_extra_space": 0, // 控制光标周围额外空间
+	"caret_period": 0, // 控制闪烁光标的周期，设置为 0 可以禁止闪烁
+	"caret_blink_rate": 500, // 控制光标闪烁速度，单位是毫秒
+
+	// === IMPROVED TAB COMPLETION SETTINGS ===
+	"auto_complete": true,
+	"auto_complete_with_fields": true,
+	"auto_complete_commit_on_tab": true,  // Enable Tab to commit completions
+	"auto_complete_commit_on_enter": false,  // Disable Enter to avoid accidental commits
+	"auto_complete_cycle": true,
+	"auto_complete_delay": 50,  // Faster auto-complete trigger (default is 50ms)
+	"auto_complete_size_limit": 4194304,  // Larger completion database
+	"auto_complete_triggers": [  // Enhanced triggers for different languages
+		{
+			"selector": "text.html",
+			"characters": "<",
+		},
+		{
+			"selector": "source.css",
+			"characters": ":",
+		},
+		{
+			"selector": "source.js, source.ts",
+			"characters": ".",
+		},
+		{
+			"selector": "source.python",
+			"characters": ".",
+		}
+	],
+	"tab_completion": true,
+	"tab_size": 4,
+	"detect_indentation": true,
+
+	// === ADDITIONAL HELPFUL SETTINGS ===
+	"auto_complete_include_snippets": true,  // Include snippets in completions
+	"auto_complete_include_snippets_when_typing": true,
+	"show_definitions": true,  // Show hover definitions
+	"show_errors_inline": true,  // Inline error display
+	// "rulers": [80, 120],  // Helpful ruler guides
+	"draw_white_space": "selection",  // Show whitespace only in selections
+
+	"ignored_packages": [
+		"NeoVintageous",
+		"Vintage",
+		"Vintageous",
+	],
+
+	// Quit automatically when the last view is closed
+	"idle_timeout": 0,
+
+	"open_files_in_new_window": false,
+}

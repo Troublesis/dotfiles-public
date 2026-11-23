@@ -1,0 +1,28 @@
+# XDG base dir: pin config home so tools (e.g. aicommit2) resolve a single
+# config path across Darwin + Linux. Set in zshenv so login, non-login, and
+# non-interactive/script shells all see it. macOS otherwise defaults to ~/Library.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+# Debian/Ubuntu's /etc/zsh/zshrc runs its own compinit (with a different fpath)
+# before ~/.zshrc; the two disagree on the dump header, so every shell rebuilt
+# and rewrote ~/.zcompdump twice. ~/.zshrc owns compinit; skip the global one.
+skip_global_compinit=1
+
+# Load local shell secrets for all zsh shells, including non-interactive ones.
+[[ -f "$HOME/.zsh_secrets" ]] && source "$HOME/.zsh_secrets"
+
+# Let tools like thefuck detect the current shell without macOS process probing.
+export TF_SHELL="zsh"
+# moshi-hook gateway: port 0 = OS auto-picks a free port each launch (collision-proof; default :24543 is held by a stale daemon in another PID namespace).
+export MOSHI_HOOK_GATEWAY_LISTEN="127.0.0.1:0"
+# Ensure critical paths are available in non-interactive SSH sessions (e.g., docker context)
+typeset -U PATH path
+path+=(/usr/local/bin /opt/homebrew/bin)
+export PATH
+
+# Keep the moshi-hook daemon alive via a tmux supervisor (no systemd/brew on this host).
+# Idempotent and backgrounded so it never blocks shell startup. Skip under non-interactive
+# subshells to avoid redundant checks; one interactive/login shell per boot is enough.
+if [[ -o interactive ]] && [[ -x "$HOME/.local/bin/moshi-up" ]] && command -v tmux >/dev/null 2>&1; then
+  "$HOME/.local/bin/moshi-up" >/dev/null 2>&1 &!
+fi

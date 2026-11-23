@@ -1,0 +1,66 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/bash
+{{- if eq .chezmoi.os "darwin" }}
+set -euo pipefail
+
+# ── Homebrew ──────────────────────────────────────────────────────────────────
+if ! command -v brew >/dev/null 2>&1; then
+  echo "[INFO] Installing Homebrew..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+eval "$("$(brew --prefix)/bin/brew" shellenv)"
+
+command -v mas >/dev/null 2>&1 || brew install mas || true
+
+# ── macOS defaults ────────────────────────────────────────────────────────────
+echo "[INFO] Applying macOS defaults..."
+defaults write -g AppleInterfaceStyle -string "Dark"
+defaults write com.apple.finder AppleShowAllFiles -bool true
+defaults write com.apple.finder ShowPathbar -bool true
+defaults write com.apple.finder ShowStatusBar -bool true
+defaults write NSGlobalDomain AppleShowAllExtensions -bool true
+defaults write NSGlobalDomain NSAutomaticSpellingCorrectionEnabled -bool false
+defaults write NSGlobalDomain NSAutomaticCapitalizationEnabled -bool false
+defaults write NSGlobalDomain ApplePressAndHoldEnabled -bool false
+defaults write NSGlobalDomain InitialKeyRepeat -int 25
+defaults write NSGlobalDomain KeyRepeat -int 2
+defaults write com.apple.screencapture location -string "$HOME/Pictures"
+defaults write com.apple.dock autohide -bool true
+defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
+
+# ── Default shell (zsh) ──────────────────────────────────────────────────────
+if [ "$(basename "$SHELL")" != "zsh" ]; then
+  echo "[INFO] Setting default shell to zsh..."
+  brew install zsh || true
+  local_zsh="$(brew --prefix)/bin/zsh"
+  if ! grep -q "$local_zsh" /etc/shells 2>/dev/null; then
+    echo "$local_zsh" | sudo tee -a /etc/shells
+  fi
+  chsh -s "$local_zsh"
+fi
+
+# ── fzf setup ────────────────────────────────────────────────────────────────
+if [ ! -f "$HOME/.fzf.zsh" ]; then
+  fzf_install="$(brew --prefix)/opt/fzf/install"
+  [ -x "$fzf_install" ] && "$fzf_install" --key-bindings --completion --no-update-rc
+fi
+
+# ── GitHub CLI ────────────────────────────────────────────────────────────────
+command -v gh >/dev/null 2>&1 || brew install gh
+
+# ── Starship prompt ──────────────────────────────────────────────────────────
+command -v starship >/dev/null 2>&1 || brew install starship
+
+# ── moshi-hook ────────────────────────────────────────────────────────────────
+if command -v moshi-hook >/dev/null 2>&1; then
+  if ! moshi-hook status >/dev/null 2>&1; then
+    echo "[INFO] moshi-hook not paired yet."
+    echo "       Run: moshi-hook pair --token <TOKEN> [--store file]"
+    echo "       Then: moshi-hook install && brew services start moshi-hook"
+  fi
+fi
+
+{{- end }}
+
+{{- end -}}

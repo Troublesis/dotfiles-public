@@ -1,0 +1,45 @@
+# Ensure Bun tools resolve in login/non-interactive shells used by remote agents.
+export BUN_INSTALL="${HOME}/Library/Application Support/reflex/bun"
+[[ -d "${BUN_INSTALL}/bin" ]] && export PATH="${BUN_INSTALL}/bin:${PATH}"
+
+# --- macOS-only setup ---
+if [[ "$(uname)" == "Darwin" ]]; then
+    # Homebrew (Apple Silicon prefix; skipped on Intel where /opt/homebrew is absent).
+    # `brew shellenv` spawns the brew wrapper (~60ms). Cache its output and re-run
+    # only when the brew binary is newer than the cache; otherwise just source it.
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        _brew_env="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/brew-shellenv.zsh"
+        if [[ ! -r "$_brew_env" || /opt/homebrew/bin/brew -nt "$_brew_env" ]]; then
+            mkdir -p "${_brew_env:h}"
+            /opt/homebrew/bin/brew shellenv >| "$_brew_env" 2>/dev/null
+        fi
+        source "$_brew_env"
+        unset _brew_env
+    fi
+
+    # pyenv PATH (shims). `pyenv init --path` only prepends the shims dir, so do it
+    # statically to avoid spawning pyenv on every login (~20ms) — but ONLY when
+    # pyenv is actually installed. Its shims exec the pyenv binary, so putting them
+    # on PATH without it (e.g. a stale ~/.pyenv left after an uninstall) would
+    # shadow python/pip with broken stubs. `command -v` is a builtin (no spawn).
+    # Shell integration (`pyenv init -`) belongs in the interactive config, not here.
+    export PYENV_ROOT="$HOME/.pyenv"
+    if [[ -x "$PYENV_ROOT/bin/pyenv" ]] || command -v pyenv >/dev/null 2>&1; then
+        [[ -d "$PYENV_ROOT/bin" ]]   && path=("$PYENV_ROOT/bin" $path)
+        [[ -d "$PYENV_ROOT/shims" ]] && path=("$PYENV_ROOT/shims" $path)
+    fi
+
+    # Homebrew Ruby (Intel) — https://mac.install.guide/ruby/13
+    # Add ruby + its gem bindir to PATH WITHOUT spawning Ruby. The old
+    # `gem environment gemdir` call cost ~130ms per login; the gem bindir lives at
+    # /usr/local/lib/ruby/gems/<ver>/bin and is resolved here with a glob instead.
+    if [[ -d /usr/local/opt/ruby/bin ]]; then
+        path=(/usr/local/opt/ruby/bin $path)
+        _gem_bins=(/usr/local/lib/ruby/gems/*/bin(/nN))
+        (( ${#_gem_bins} )) && path=("${_gem_bins[-1]}" $path)
+        unset _gem_bins
+    fi
+
+    # Added by OrbStack: command-line tools and integration
+    source ~/.orbstack/shell/init.zsh 2>/dev/null || :
+fi

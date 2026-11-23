@@ -1,0 +1,127 @@
+{{- /*
+  SHARED between the personal and work dotfiles repos (synced by .work-sync/sync.sh
+  in the personal repo). Keep it free of secrets, personal hosts/IPs/emails/paths.
+  Only use template data both repos define: .chezmoi.*, and `get . "hostclass"`.
+  Rendered by:  personal dot_config/herdr/config.toml.tmpl
+                work     AppData/Roaming/herdr/config.toml.tmpl
+*/ -}}
+{{- $hostclass := get . "hostclass" -}}
+{{- $msiPwsh := "C:/Program Files/PowerShell/7/pwsh.exe" -}}
+onboarding = false
+
+# =============================================================================
+# herdr config — mirrors the tmux/rmux hotkeys (chezmoi-managed, shared template)
+#   Reload : herdr server reload-config  (or global menu → reload config)
+#   Check  : herdr config check
+#
+#   Concept map:  tmux "window"  -> herdr "tab"
+#                 tmux "session" -> herdr "workspace"
+#                 tmux "pane"    -> herdr "pane"
+# =============================================================================
+
+# --- Behavior parity with tmux ----------------------------------------------
+[terminal]
+# tmux splits open in "#{pane_current_path}"; make new panes/tabs follow cwd.
+new_cwd = "follow"
+# Explicit default shell so herdr doesn't fall back to the server process's
+# $SHELL (stale on the long-lived herdr server). Only set where the path is
+# known; elsewhere herdr keeps the upstream $SHELL-then-/bin/sh fallback.
+#   nas     : Synology zsh-static lives at /usr/local/bin/zsh.
+#   Windows : standalone-MSI pwsh 7 (not the WindowsApps alias / MSIX path, which
+#             fails with "Access is denied" when herdr runs over SSH). Set when
+#             that MSI binary is installed, and always on the work hostclass
+#             (its bootstrap installs it, possibly after this file first renders).
+{{- if eq $hostclass "nas" }}
+default_shell = "/usr/local/bin/zsh"
+{{- else if and (eq .chezmoi.os "windows") (or (eq $hostclass "work") (stat $msiPwsh)) }}
+default_shell = {{ $msiPwsh | squote }}
+{{- end }}
+
+# --- UI: trim herdr to the minimal tmux feel --------------------------------
+[theme]
+name = "catppuccin"
+auto_switch = false
+
+[ui]
+accent = "cyan"
+sidebar_start_collapsed = true      # herdr >= 0.9.4: launch with the sidebar closed (prefix+b toggles)
+sidebar_collapsed_mode = "hidden"   # collapsed = zero width, not the narrow status rail
+pane_borders = true       # tmux draws pane borders
+pane_gaps = false         # tmux has no pane gaps
+mouse_capture = true      # tmux: set -g mouse on
+prompt_new_tab_name = false  # tmux windows auto-name, no prompt
+show_agent_labels_on_pane_borders = false
+agent_panel_sort = "spaces"
+
+[ui.toast]
+# tmux has no popups; keep herdr quiet.
+delivery = "off"
+
+[ui.sound]
+enabled = false
+
+# --- Sessions: reopen where you left off ------------------------------------
+# A bare `herdr` (PowerShell: `t`) reattaches to the persistent session; after a
+# server restart (reboot/update) herdr restores the saved layout and, with this
+# on, resumes each AI-agent pane's most recent native conversation (Claude Code
+# etc.). Docs default is true - pinned so the behaviour is explicit and tracked.
+[session]
+resume_agents_on_restore = true
+{{ if eq .chezmoi.os "windows" }}
+# Windows only: follow the preview update channel.
+[update]
+channel = "preview"
+{{ end -}}
+
+# =============================================================================
+# Keys — prefix is ctrl+b (same as tmux and herdr default)
+# =============================================================================
+[keys]
+
+# --- Prefix-mode actions ---
+reload_config   = "prefix+r"          # tmux: bind r source-file ~/.tmux.conf
+resize_mode     = "prefix+shift+r"    # tmux resizes on prefix+arrows; herdr uses a mode
+help            = "prefix+space"      # tmux: bind space list-keys
+goto            = "prefix+."          # tmux: bind . command-prompt
+detach          = "prefix+d"          # tmux default detach
+
+# --- Workspaces (tmux sessions) ---
+# Shift+= arrives as either shift+'=' or a bare '+' depending on the terminal's
+# keyboard protocol, so bind both forms.
+new_workspace     = ["prefix+shift+=", "prefix+plus"]  # tmux: bind + new-session
+rename_workspace  = "prefix+m"        # tmux: bind m rename-session
+close_workspace   = "prefix+shift+q"  # tmux: bind Q kill-session (confirm_close prompts)
+previous_workspace = "alt+shift+left" # tmux: M-S-Left  switch-client -p
+next_workspace     = "alt+shift+right" # tmux: M-S-Right switch-client -n
+
+# --- Tabs (tmux windows) ---
+new_tab       = "prefix+c"            # tmux default: new-window
+rename_tab    = "prefix+n"            # tmux: bind n rename-window
+close_tab     = "alt+z"               # tmux: M-z kill-window (confirm prompts)
+previous_tab  = ["shift+left", "alt+shift+h"]   # tmux: S-Left  / M-H previous-window
+next_tab      = ["shift+right", "alt+shift+l"]  # tmux: S-Right / M-L next-window
+switch_tab    = "alt+1..9"            # tmux: M-1..M-9 select-window -t N
+
+# --- Panes ---
+focus_pane_left  = ["prefix+h", "alt+left"]   # tmux: bind h / M-Left  select-pane -L
+focus_pane_down  = ["prefix+j", "alt+down"]   # tmux: bind j / M-Down  select-pane -D
+focus_pane_up    = ["prefix+k", "alt+up"]     # tmux: bind k / M-Up    select-pane -U
+focus_pane_right = ["prefix+l", "alt+right"]  # tmux: bind l / M-Right select-pane -R
+swap_pane_left   = "prefix+shift+h"   # tmux: bind H swap-pane -d -t '{left-of}'
+swap_pane_down   = "prefix+shift+j"   # tmux: bind J swap-pane -d -t '{down-of}'
+swap_pane_up     = "prefix+shift+k"   # tmux: bind K swap-pane -d -t '{up-of}'
+swap_pane_right  = "prefix+shift+l"   # tmux: bind L swap-pane -d -t '{right-of}'
+split_horizontal = "prefix+minus"    # tmux: bind - split-window -v  (top/bottom)
+split_vertical   = "prefix+="         # tmux: bind = split-window -h  (side-by-side)
+close_pane     = ["prefix+x", "alt+x"]  # both work; prefix+x = default, alt+x = tmux M-x parity
+zoom           = "prefix+z"           # tmux default: resize-pane -Z
+copy_mode      = "prefix+["           # tmux copy-mode default
+toggle_sidebar = "prefix+b"           # tmux: bind b set-option status (bar toggle)
+
+# Indexed fallback if switch_tab = "alt+1..9" does not parse on your build:
+# [keys.indexed]
+# tabs = "alt"
+
+[experimental]
+pane_history = false
+switch_ascii_input_source_in_prefix = false

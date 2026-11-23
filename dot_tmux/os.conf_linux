@@ -1,0 +1,10 @@
+# OS: Linux
+# Sourced by private_dot_tmux.conf.tmpl when .chezmoi.os == "linux".
+# host.conf_* fragments may override default-shell (e.g. NAS uses /usr/local/bin/zsh).
+
+# Guarded: tmux hard-errors ("not a suitable shell") if the path is missing
+# (e.g. Entware-only zsh on the NAS, where host.conf_nas sets the real path).
+if-shell '[ -x /bin/zsh ]' 'set-option -g default-shell /bin/zsh'
+
+# tmux-yank auto-detects wl-copy (Wayland) -> xsel -> xclip in that order
+# for direct-attach copy. OSC52 (set-clipboard on) handles SSH sessions.

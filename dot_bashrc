@@ -1,0 +1,76 @@
+# ~/.bashrc — Git Bash on Windows (managed by chezmoi; edit with `chezmoi edit ~/.bashrc`)
+# Mirrors ~/.zsh/common.zsh + ai.zsh and ~/.config/powershell/*.ps1.
+[[ $- == *i* ]] || return
+
+# --- PATH: chezmoi/local bins ------------------------------------------------
+export PATH="$HOME/.local/bin:$PATH"
+
+# --- Secrets (same age-decrypted file zsh uses; shell syntax) -----------------
+[ -f ~/.zsh_secrets ] && . ~/.zsh_secrets
+
+# --- chezmoi -----------------------------------------------------------------
+alias cz='chezmoi'
+alias cza='chezmoi add'
+alias czd='chezmoi diff'
+alias cze='chezmoi edit'
+alias czs='chezmoi status'
+alias czu='chezmoi update'      # pull + apply
+alias czp='chezmoi git push'
+alias czr='chezmoi re-add'
+alias eb='chezmoi cd'
+
+# --- Editor: vi/vim -> nvim when installed, else vim ---------------------------
+if command -v nvim >/dev/null 2>&1; then
+  alias vi='nvim'; alias vim='nvim'
+  export EDITOR=nvim VISUAL=nvim
+else
+  alias vi='vim'
+  export EDITOR=vim VISUAL=vim
+fi
+
+# --- Misc --------------------------------------------------------------------
+alias x='clear'
+alias c='claude'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias dl='cd ~/Downloads'
+alias ll='ls -lh --color=auto'
+alias la='ls -lah --color=auto'
+alias grep='grep --color=auto'
+alias r='source ~/.bashrc'
+
+# --- AI launchers (port of ~/.zsh/ai.zsh; same vars as ai.ps1) ----------------
+# Each runs in a subshell so provider env vars don't leak into the session.
+export CODEX_APIKEY="${CODEX_APIKEY:-$_LOCAL_AI_TOKEN}"
+export CLAUDE_CODE_NO_FLICKER=1
+
+_ai_run() {  # _ai_run HAIKU SONNET OPUS URL TOKEN [claude args...]
+  local h=$1 s=$2 o=$3 url=$4 tok=$5; shift 5
+  ( export ANTHROPIC_DEFAULT_HAIKU_MODEL="$h" ANTHROPIC_DEFAULT_SONNET_MODEL="$s" \
+           ANTHROPIC_DEFAULT_OPUS_MODEL="$o" ANTHROPIC_BASE_URL="$url" \
+           ANTHROPIC_AUTH_TOKEN="$tok" API_TIMEOUT_MS=3000000
+    claude "$@" )
+}
+ds() {
+  ( export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" ANTHROPIC_AUTH_TOKEN="$_DS_TOKEN" \
+           ANTHROPIC_MODEL="deepseek-v4-pro[1m]" ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-v4-pro[1m]" \
+           ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-v4-pro[1m]" ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-v4-flash[1m]" \
+           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_EFFORT_LEVEL=max
+    claude "$@" )
+}
+zai()  { _ai_run glm-4.5-air glm-5.1 glm-5.2 "$_ZAI_URL" "$_ZAI_TOKEN" "$@"; }
+grok() { _ai_run x-ai/grok-4.1-fast x-ai/grok-4.1-fast x-ai/grok-4.1-fast "$_LOCAL_AI_URL" "$_LOCAL_AI_TOKEN" "$@"; }
+gpt()  { _ai_run gpt-5.4-mini gpt-5.5 gpt-5.5 "$_LOCAL_AI_URL" "$_LOCAL_AI_TOKEN" "$@"; }
+cg()   { _ai_run gemini-2.5-flash gemini-3-pro-preview gemini-3-pro-preview "$_LOCAL_AI_URL" "$_LOCAL_AI_TOKEN" "$@"; }
+glm()  { _ai_run glm-4.5-air glm-5.1 glm-5.2 "$_LOCAL_AI_URL" "$_LOCAL_AI_TOKEN" "$@"; }
+# cc: Anthropic via local proxy; falls back to plain `claude` if no proxy is configured
+cc() {
+  if [ -n "$_LOCAL_AI_URL" ]; then
+    _ai_run claude-haiku-5-5 claude-sonnet-5-5 claude-opus-5-5 "$_LOCAL_AI_URL" "$_LOCAL_AI_TOKEN" "$@"
+  else
+    claude "$@"
+  fi
+}
+
+# Optional private overlay (personal aliases/hosts) — absent on a public-only machine.
+[ -r "$HOME/.bashrc.personal" ] && . "$HOME/.bashrc.personal"

@@ -1,0 +1,93 @@
+{{- if eq .chezmoi.os "windows" -}}
+# =============================================================================
+# Windows post-apply summary: how to SSH INTO this machine from another host.
+#
+# The bash summary (run_after_99-bootstrap-summary.sh.tmpl) is guarded to
+# non-Windows only; this is its Windows twin. Runs after every `chezmoi apply`
+# (run_after_*, not run_once_*) so the connect note is reprinted on every update
+# — IPs and the resolved DefaultShell can change between runs (DHCP lease, a
+# pwsh upgrade shifting the MSIX version-stamped path, etc.).
+#
+# It only PRINTS — the bootstrap (run_once_40-windows-setup.ps1.tmpl) does the
+# actual sshd / firewall / DefaultShell setup. This just surfaces the live state.
+#
+# NOTE: keep output pure-ASCII. On Chinese Windows the console/OEM code page is
+# CP936 (GBK); any UTF-8 box-drawing / em-dash here shows as mojibake (鈺愨晲…)
+# after a `chezmoi update`, because UTF-8 bytes get decoded as GBK. ASCII banners
+# render correctly under every code page.
+# =============================================================================
+
+# Launched from pwsh 7, Windows PowerShell 5.1 inherits pwsh's PSModulePath and
+# loads the wrong (7.x) Microsoft.PowerShell.Security etc. -> "module could not be
+# loaded". Rebuild the stock Windows PowerShell module path from the registry.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath','User'),
+                           [Environment]::GetEnvironmentVariable('PSModulePath','Machine')) | Where-Object { $_ }) -join ';'
+}
+
+$ErrorActionPreference = "Continue"
+
+# Skip entirely if sshd isn't installed/running — nothing useful to say, and a
+# fresh box before bootstrap has run wouldn't have it yet.
+$sshd = Get-Service sshd -ErrorAction SilentlyContinue
+if ($null -eq $sshd -or $sshd.Status -ne "Running") { exit 0 }
+
+# --- LAN IPv4 addresses reachable for inbound SSH --------------------------------
+# Only connected (non-loopback, non-well-known) interfaces, on a profile that has
+# some IPv4 connectivity. Excludes disconnected VPN/virtual adapters.
+$ips = @()
+try {
+    $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.PrefixOrigin -ne 'WellKnown' -and
+            $_.IPAddress -ne '127.0.0.1' -and
+            -not ($_.InterfaceAlias -match 'Loopback|vEthernet|WSL')
+        } |
+        Where-Object {
+            $cp = Get-NetConnectionProfile -InterfaceAlias $_.InterfaceAlias -ErrorAction SilentlyContinue
+            $null -ne $cp -and ($cp.IPv4Connectivity -eq 'Internet' -or $cp.IPv4Connectivity -eq 'LocalNetwork')
+        } |
+        Select-Object -ExpandProperty IPAddress
+} catch { }
+
+if ($ips.Count -eq 0) { exit 0 }
+
+# --- Which shell a remote session will land in ----------------------------------
+$defaultShell = (Get-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
+$shellLabel = "cmd (default)"
+if ($defaultShell) {
+    switch -Wildcard ($defaultShell) {
+        "*\PowerShell\7\pwsh.exe*"                       { $shellLabel = "PowerShell 7 (pwsh)" }
+        "*\WindowsApps\Microsoft.PowerShell_*\pwsh.exe*" { $shellLabel = "PowerShell 7 (pwsh, Store/MSIX)" }
+        "*\WindowsPowerShell\v1.0\powershell.exe*"       { $shellLabel = "Windows PowerShell 5.1" }
+        default                                          { $shellLabel = $defaultShell }
+    }
+}
+
+# --- Firewall + port sanity (informational; bootstrap already enforces these) ----
+$fw = Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
+$fwState = if ($fw -and $fw.Enabled) { "open (inbound TCP/22 allowed)" } else { "BLOCKED -- re-run bootstrap elevated" }
+
+$user = "{{ .chezmoi.username }}"
+$host_ = "{{ .chezmoi.hostname }}"
+
+Write-Host ""
+Write-Host "================== SSH access to this machine =================="
+Write-Host "sshd is running (startup = Automatic); firewall: $fwState"
+Write-Host "Default shell for remote sessions: $shellLabel"
+Write-Host ""
+Write-Host "Connect from another machine on the same network:"
+foreach ($ip in $ips) {
+    Write-Host "    ssh ${user}@${ip}"
+}
+Write-Host ""
+Write-Host "    host: $host_   user: $user   port: 22"
+Write-Host "    (password = your Windows login password; PIN does not work over SSH)"
+Write-Host ""
+Write-Host "First connect: answer 'yes' to the host-key prompt."
+Write-Host "Key-based login (skip the password):"
+Write-Host "    ssh-keygen -t ed25519                                # on the OTHER machine"
+Write-Host "    ssh-copy-id ${user}@$($ips[0])                       # Linux/macOS client"
+Write-Host "================================================================"
+
+{{- end -}}

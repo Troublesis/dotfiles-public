@@ -1,0 +1,4 @@
+# OS: unknown / fallback
+# Sourced by private_dot_tmux.conf.tmpl for any OS that is neither darwin nor linux.
+
+set-option -g default-shell /bin/sh

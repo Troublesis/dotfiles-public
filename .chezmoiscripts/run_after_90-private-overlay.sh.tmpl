@@ -1,0 +1,23 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/usr/bin/env bash
+# Optional private overlay: a second chezmoi source (secrets + personal data) that is
+# applied on top of this public repo. Absent on a public-only machine → this is a no-op.
+#
+# The overlay is a git clone at $DOTFILES_OVERLAY_DIR (default ~/.local/share/dotfiles-private),
+# created by the bootstrap. Nothing here names the overlay's repo.
+#
+# A nested `chezmoi apply` would deadlock on the outer run's persistent-state lock, so the
+# overlay gets its own state file.
+set -euo pipefail
+
+overlay="${DOTFILES_OVERLAY_DIR:-$HOME/.local/share/dotfiles-private}"
+[[ -d "$overlay/.git" ]] || exit 0
+
+if ! git -C "$overlay" pull --ff-only --quiet 2>/dev/null; then
+  echo "private-overlay: could not fast-forward $overlay (offline or diverged) — applying the checked-out state." >&2
+fi
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/chezmoi-overlay"
+mkdir -p "$state"
+chezmoi apply --source "$overlay" --persistent-state "$state/chezmoistate.boltdb" --force
+{{- end -}}

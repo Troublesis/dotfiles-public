@@ -1,0 +1,145 @@
+{{- if eq .chezmoi.os "windows" }}
+# =============================================================================
+# Windows-only: keep Sublime Text 4 installed and its User/ config in sync with
+# the canonical chezmoi source (private_Library/.../Sublime Text/Packages/User,
+# the same files macOS deploys). Sublime's Packages/User/ files are portable
+# across OSes; only the parent path and the keymap filename differ:
+#   macOS:   ~/Library/Application Support/Sublime Text/Packages/User
+#   Linux:   ~/.config/sublime-text/Packages/User
+#   Windows: %APPDATA%\Sublime Text\Packages\User
+#
+# This is a `run_onchange` script: a tracked-manifest at the bottom is re-rendered
+# into the script body whenever a Sublime config file is added or removed, so
+# chezmoi re-runs the sync automatically and Windows never drifts from macOS.
+# =============================================================================
+
+# Launched from pwsh 7, Windows PowerShell 5.1 inherits pwsh's PSModulePath and
+# loads the wrong (7.x) Microsoft.PowerShell.Security etc. -> "module could not be
+# loaded". Rebuild the stock Windows PowerShell module path from the registry.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath','User'),
+                           [Environment]::GetEnvironmentVariable('PSModulePath','Machine')) | Where-Object { $_ }) -join ';'
+}
+
+$ErrorActionPreference = "Stop"
+
+function Log-Info { param([string]$Msg) Write-Host "[INFO] $Msg" }
+function Log-Ok   { param([string]$Msg) Write-Host "[OK]   $Msg" }
+
+# Re-merge Machine + User PATH so tools just installed by choco/winget are
+# visible in this same-session process.
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+
+# =============================================================================
+# 1. Chocolatey
+# =============================================================================
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Log-Info "Installing Chocolatey"
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+    Log-Ok "Chocolatey installed"
+} else {
+    Log-Ok "Chocolatey $(choco --version) present"
+}
+
+# =============================================================================
+# 2. Sublime Text 4 (choco install sublimetext4)
+# =============================================================================
+$sublimeExe = "C:\Program Files\Sublime Text\sublime_text.exe"
+if (-not (Test-Path $sublimeExe)) {
+    Log-Info "Installing Sublime Text 4 via Chocolatey"
+    choco install sublimetext4 -y --no-progress
+    if ($LASTEXITCODE -ne 0) { Write-Warning "[WARN] choco install sublimetext4 exit $LASTEXITCODE" }
+} else {
+    Log-Ok "Sublime Text 4 already installed"
+}
+
+# =============================================================================
+# 3. Sync User/ packages from chezmoi source -> %APPDATA%
+# =============================================================================
+$src = Join-Path $HOME ".local\share\chezmoi\private_Library\private_Application Support\Sublime Text\Packages\User"
+$dst = Join-Path $env:APPDATA "Sublime Text\Packages\User"
+
+if (-not (Test-Path $src)) {
+    Write-Warning "[WARN] Sublime source dir not found: $src"
+    Write-Warning "       Run chezmoi init/apply first; nothing to sync."
+    exit 0
+}
+
+New-Item -ItemType Directory -Path $dst -Force | Out-Null
+Log-Info "Mirroring $src -> $dst"
+
+# Recursively mirror the ENTIRE User/ tree (files + subdirectories), so the
+# Aura theme (Aura Theme Color Scheme/aura-theme.tmTheme referenced by
+# Preferences) and any future theme assets sync verbatim. We copy first then
+# prune stale entries that no longer exist in source so Windows never holds
+# orphaned files. The Windows keymap is generated separately below (not from
+# a source file), so it is exempt from pruning.
+$winKeymapName = "Default (Windows).sublime-keymap"
+
+# Copy every source file, preserving subdirectory structure.
+Get-ChildItem -LiteralPath $src -Recurse -File | ForEach-Object {
+    $rel = $_.FullName.Substring($src.Length + 1)
+    $target = Join-Path $dst $rel
+    $targetDir = Split-Path -Parent $target
+    if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+    Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+}
+Log-Ok "Copied all User/ files + subdirectories (theme, settings, color scheme)"
+
+# Prune stale files in dst that no longer exist in src (keeps Windows in
+# lock-step with source). Skip the derived Windows keymap and Sublime runtime
+# caches; only sweep the dirs we own.
+Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $rel = $_.FullName.Substring($dst.Length + 1)
+    if ($rel -eq $winKeymapName) { return }          # generated locally
+    if ($rel -like "*.sublime-package") { return }   # Sublime runtime artifact
+    if ($rel -like "Package Control.user-ca-bundle") { return }  # listed in .chezmoiignore
+    $origin = Join-Path $src $rel
+    if (-not (Test-Path $origin)) {
+        Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        Write-Host "[INFO] pruned stale: $rel"
+    }
+}
+
+# =============================================================================
+# 4. Derive Default (Windows).sublime-keymap from the OSX keymap.
+# Sublime on Windows reads "Default (Windows).sublime-keymap"; the OSX file uses
+# `super` (Cmd) which has no Windows equivalent. Map super -> ctrl; leave the
+# ctrl/alt bindings as-is. This keeps a single source of truth (the OSX keymap)
+# rather than maintaining two divergent files.
+# =============================================================================
+$osxKeymap = Join-Path $src "Default (OSX).sublime-keymap"
+$winKeymap = Join-Path $dst "Default (Windows).sublime-keymap"
+if (Test-Path $osxKeymap) {
+    $content = Get-Content -LiteralPath $osxKeymap -Raw
+    # Only rewrite the modifier inside key names ("super+ -> "ctrl+), leaving
+    # comments and prose untouched.
+    $content = $content -replace '"super\+', '"ctrl+'
+    Set-Content -LiteralPath $winKeymap -Value $content -NoNewline
+    Log-Ok "Derived Default (Windows).sublime-keymap from OSX keymap"
+} else {
+    Write-Warning "[WARN] OSX keymap missing; skipped Windows keymap derivation"
+}
+
+Log-Ok "Sublime Text 4 config synced to $dst"
+Write-Host ""
+Write-Host "Launch Sublime once so Package Control auto-installs the packages"
+Write-Host "listed in Package Control.sublime-settings (JsPrettier, Terminus, etc.)."
+
+# run_onchange re-fires whenever the RENDERED script content changes. The
+# manifest below lists every tracked Sublime config file that exists in source
+# at render time; adding or removing a tracked file changes the rendered
+# manifest and re-triggers this sync. (Content-only edits don't change the
+# manifest — run `czu` / `chezmoi apply` deliberately after such edits.)
+{{- $root := "private_Library/private_Application Support/Sublime Text/Packages/User" -}}
+# tracked-manifest:
+{{- range $f := list "Preferences.sublime-settings" "Package Control.sublime-settings" "JsPrettier.sublime-settings" "Base File.sublime-settings" "python-black.sublime-settings" "Terminus.sublime-settings" "Plain text.sublime-settings" "aura-theme.sublime-color-scheme" "Default (OSX).sublime-keymap" "Aura Theme Color Scheme/aura-theme.tmTheme" -}}
+{{- $p := joinPath $root $f -}}
+{{- if stat $p -}}
+#   - {{ $f }}
+{{- end -}}
+{{- end -}}
+{{- end }}

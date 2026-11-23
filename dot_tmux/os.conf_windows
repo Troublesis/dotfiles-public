@@ -1,0 +1,17 @@
+# OS: Windows
+# Sourced by private_dot_tmux.conf.tmpl when .chezmoi.os == "windows".
+# psmux reads ~/.tmux.conf natively — same config as tmux on other platforms.
+
+# PowerShell 7 (pwsh) if installed, else Windows PowerShell 5.1.
+# psmux spawns default-shell on every new pane; a missing binary hard-fails
+# the server (CreateProcessW os error 2). Detect at config load so the same
+# ~/.tmux.conf works before and after `winget install Microsoft.PowerShell`.
+#
+# psmux evaluates if-shell conditions via cmd.exe (ComSpec) — it is a native
+# Windows tmux port with no POSIX sh — so the test must be cmd-native: `where`
+# (not `command -v`) and `NUL` (not /dev/null). Real tmux on Linux/macOS never
+# loads this fragment (it is gated to .chezmoi.os == "windows" upstream), so
+# cmd-only syntax here is safe.
+if-shell 'where pwsh >NUL 2>NUL' \
+  'set-option -g default-shell pwsh' \
+  'set-option -g default-shell powershell'

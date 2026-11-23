@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Public-repo gate: block personal info / secrets before a commit is created.
+# Layer 1 (generic) always runs; layer 2 (personal denylist) runs when
+# ~/.config/dotfiles/denylist exists. See tools/check-public.sh.
+# Bypass (NOT recommended): set SKIP_GATE=1 for the commit, or pass --no-verify.
+set -euo pipefail
+if [[ "${SKIP_GATE:-0}" == "1" ]]; then
+  echo "pre-commit: SKIP_GATE=1 — public-repo gate skipped" >&2
+  exit 0
+fi
+git diff --cached --quiet && exit 0   # nothing staged
+exec "$(git rev-parse --show-toplevel)/tools/check-public.sh" --staged

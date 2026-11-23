@@ -1,0 +1,7 @@
+{{- /* Host-class fragments. macbook / mac-studio / nas settings live in the private
+     overlay (personal.zsh), so those classes render nothing here. */ -}}
+{{- if eq .hostclass "code-server" -}}
+{{-   include "dot_zsh/host.zsh_code-server" -}}
+{{- else if eq .hostclass "default" -}}
+{{-   include "dot_zsh/host.zsh_default" -}}
+{{- end -}}

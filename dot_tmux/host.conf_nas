@@ -1,0 +1,14 @@
+# Host: nas
+# Entware-managed zsh lives under /usr/local/bin, not /bin.
+set-option -g default-shell /usr/local/bin/zsh
+
+# NAS terminals (often over SSH from non-Ghostty clients) misbehave when
+# better-mouse-mode emits fake scroll events into alternate buffers.
+set -g @emulate-scroll-for-no-mouse-alternate-buffer 'on'
+
+# Headless NAS: no pbcopy/wl-copy/xsel/xclip exists (and none are packaged in
+# Entware), so tmux-yank would bind its "dependencies not installed" error.
+# Fall back to tmux's own clipboard path: `load-buffer -w` fills the paste
+# buffer and emits OSC52 (set-clipboard on) to the outer terminal. tmux-yank
+# only uses this when no native clipboard tool is found.
+set -g @custom_copy_command 'tmux load-buffer -w -'

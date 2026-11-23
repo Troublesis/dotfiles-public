@@ -1,0 +1,312 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/bash
+# run_onchange (not run_once): this script needs git/curl/node/npm/tmux, which the
+# Linux package bootstrap may only provide on a LATER apply (or after a manual fix).
+# A run_once script that ran too early would never retry (tpm + npm globals stayed
+# missing). The fingerprint below changes when those tools appear, so chezmoi
+# re-runs it; every installer is idempotent. Fingerprint: {{ lookPath "git" }} {{ lookPath "curl" }} {{ lookPath "node" }} {{ lookPath "npm" }} {{ lookPath "tmux" }}
+# Soft fail-mode: one missing tool should not abort the whole script.
+set -uo pipefail
+
+# ── Neovim ────────────────────────────────────────────────────────────────────
+install_nvim() {
+  command -v nvim >/dev/null 2>&1 && return 0
+
+  echo "[INFO] Installing Neovim (latest stable)..."
+  local arch os suffix
+  arch="$(uname -m)"
+  os="$(uname -s)"
+
+  case "$os" in
+    Linux)  suffix="linux" ;;
+    Darwin) suffix="macos" ;;
+    *)      echo "[WARN] Unsupported OS: $os"; return 1 ;;
+  esac
+  case "$arch" in
+    x86_64|amd64)   suffix="${suffix}-x86_64" ;;
+    aarch64|arm64)  suffix="${suffix}-arm64" ;;
+    *)              echo "[WARN] Unsupported arch: $arch"; return 1 ;;
+  esac
+
+  local tmpdir nvim_tar nvim_src
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+  nvim_tar="${tmpdir}/nvim-${suffix}.tar.gz"
+
+  curl -fSL -o "$nvim_tar" "https://github.com/neovim/neovim/releases/latest/download/nvim-${suffix}.tar.gz"
+  tar xzf "$nvim_tar" -C "$tmpdir"
+  nvim_src="${tmpdir}/nvim-${suffix}"
+
+  mkdir -p "$HOME/.local/bin"
+  cp "${nvim_src}/bin/nvim" "$HOME/.local/bin/nvim"
+  chmod +x "$HOME/.local/bin/nvim"
+
+  local nvim_share="$HOME/.local/share/nvim"
+  rm -rf "$nvim_share/runtime"
+  mkdir -p "$nvim_share"
+  cp -r "${nvim_src}/share/nvim/runtime" "$nvim_share/runtime"
+
+  if ! grep -q 'VIMRUNTIME.*nvim' "$HOME/.zshenv" 2>/dev/null; then
+    printf '\nexport VIMRUNTIME="%s/runtime"\n' "$nvim_share" >> "$HOME/.zshenv"
+  fi
+
+  echo "[OK] Neovim installed ($(nvim --version 2>/dev/null | head -1))"
+}
+
+# ── tmux ──────────────────────────────────────────────────────────────────────
+install_tmux() {
+  command -v tmux >/dev/null 2>&1 && return 0
+
+  echo "[INFO] Installing tmux (latest prebuilt)..."
+  local arch os suffix
+  arch="$(uname -m)"
+  os="$(uname -s)"
+
+  case "$os" in
+    Linux)  suffix="linux" ;;
+    Darwin) suffix="macos" ;;
+    *)      echo "[WARN] Unsupported OS: $os"; return 1 ;;
+  esac
+  case "$arch" in
+    x86_64|amd64)   suffix="${suffix}-x86_64" ;;
+    aarch64|arm64)  suffix="${suffix}-arm64" ;;
+    *)              echo "[WARN] Unsupported arch: $arch"; return 1 ;;
+  esac
+
+  # tmux-builds release assets embed the version (e.g. tmux-3.6b-linux-arm64.tar.gz),
+  # so the GitHub `latest/download/<name>` shortcut cannot resolve them — query the
+  # API for the current tag and build the asset URL from it.
+  local tag ver asset url
+  tag=$(curl -fsSL https://api.github.com/repos/tmux/tmux-builds/releases/latest 2>/dev/null \
+        | grep -m1 '"tag_name"' | cut -d'"' -f4)
+  if [ -z "${tag:-}" ]; then
+    echo "[WARN] could not resolve latest tmux release tag — skipping"
+    return 1
+  fi
+  ver=${tag#v}
+  asset="tmux-${ver}-${suffix}.tar.gz"
+  url="https://github.com/tmux/tmux-builds/releases/download/${tag}/${asset}"
+
+  local tmpdir tmux_tar tmux_bin
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+  tmux_tar="${tmpdir}/${asset}"
+
+  if ! curl -fSL -o "$tmux_tar" "$url"; then
+    echo "[WARN] tmux download failed: $url"
+    return 1
+  fi
+  tar xzf "$tmux_tar" -C "$tmpdir" || { echo "[WARN] tmux extract failed"; return 1; }
+
+  # The archive ships either a bare `tmux` binary or one inside a versioned dir.
+  tmux_bin=$(find "$tmpdir" -type f -name tmux -perm -u+x 2>/dev/null | head -1)
+  [ -z "$tmux_bin" ] && tmux_bin=$(find "$tmpdir" -type f -name tmux 2>/dev/null | head -1)
+  if [ -z "$tmux_bin" ]; then
+    echo "[WARN] tmux binary not found in archive"
+    return 1
+  fi
+
+  mkdir -p "$HOME/.local/bin"
+  cp "$tmux_bin" "$HOME/.local/bin/tmux"
+  chmod +x "$HOME/.local/bin/tmux"
+
+  echo "[OK] tmux installed ($(PATH="$HOME/.local/bin:$PATH" tmux -V 2>/dev/null | head -1))"
+}
+
+# ── TPM (Tmux Plugin Manager) ────────────────────────────────────────────────
+install_tpm() {
+  local tpm_dir="$HOME/.tmux/plugins/tpm"
+
+  if [ ! -d "$tpm_dir" ]; then
+    echo "[INFO] Cloning TPM (Tmux Plugin Manager)..."
+    git clone -q https://github.com/tmux-plugins/tpm "$tpm_dir"
+  fi
+
+  [ -x "$tpm_dir/bin/install_plugins" ] && "$tpm_dir/bin/install_plugins"
+}
+
+# ── Shared helpers (forge CLIs) ──────────────────────────────────────────────
+# Resolve the latest release tag (e.g. v2.62.0) for a GitHub repo via the API.
+# Soft-fail: prints nothing and returns 1 when offline or rate-limited.
+gh_latest_tag() {
+  local repo="$1" tag
+  command -v curl >/dev/null 2>&1 || return 1
+  tag=$(curl -fsSL --connect-timeout 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
+        | grep -m1 '"tag_name"' | cut -d'"' -f4)
+  [ -z "${tag:-}" ] && return 1
+  printf '%s' "$tag"
+}
+
+# Map uname os/arch to the {linux,darwin}/{amd64,arm64} tokens these CLIs use.
+# Sets globals: FORGE_OS FORGE_ARCH. Returns 1 on unsupported platforms.
+forge_platform() {
+  case "$(uname -s)" in
+    Linux)  FORGE_OS="linux" ;;
+    Darwin) FORGE_OS="darwin" ;;
+    *)      echo "[WARN] Unsupported OS for forge CLI: $(uname -s)"; return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  FORGE_ARCH="amd64" ;;
+    aarch64|arm64) FORGE_ARCH="arm64" ;;
+    *)             echo "[WARN] Unsupported arch for forge CLI: $(uname -m)"; return 1 ;;
+  esac
+}
+
+# ── GitHub CLI (gh) ──────────────────────────────────────────────────────────
+# Most targets already get gh elsewhere (brew on Darwin, the Linux package
+# script's optional picker). This is a cross-platform fallback so hosts that
+# skipped those paths (NAS, code-server, minimal Linux) still get it.
+install_gh() {
+  command -v gh >/dev/null 2>&1 && return 0
+
+  # Prefer Homebrew on Darwin to stay consistent with run_once_20-macos-setup.sh.
+  if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    echo "[INFO] Installing GitHub CLI (gh) via Homebrew..."
+    brew install gh && { echo "[OK] gh installed ($(gh --version 2>/dev/null | head -1))"; return 0; }
+  fi
+
+  forge_platform || return 1
+  command -v curl >/dev/null 2>&1 || { echo "[WARN] curl missing — cannot install gh"; return 1; }
+
+  local tag ver asset url tmpdir bin
+  tag=$(gh_latest_tag "cli/cli") || { echo "[WARN] could not resolve latest gh release tag"; return 1; }
+  ver=${tag#v}
+  asset="gh_${ver}_${FORGE_OS}_${FORGE_ARCH}.tar.gz"
+  url="https://github.com/cli/cli/releases/download/${tag}/${asset}"
+
+  echo "[INFO] Installing GitHub CLI (gh) ${tag}..."
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+  if ! curl -fSL -o "${tmpdir}/${asset}" "$url"; then
+    echo "[WARN] gh download failed: $url"; return 1
+  fi
+  tar xzf "${tmpdir}/${asset}" -C "$tmpdir" || { echo "[WARN] gh extract failed"; return 1; }
+  bin=$(find "$tmpdir" -type f -name gh -perm -u+x 2>/dev/null | head -1)
+  [ -z "$bin" ] && bin=$(find "$tmpdir" -type f -name gh 2>/dev/null | head -1)
+  if [ -z "$bin" ]; then echo "[WARN] gh binary not found in archive"; return 1; fi
+
+  mkdir -p "$HOME/.local/bin"
+  cp "$bin" "$HOME/.local/bin/gh"
+  chmod +x "$HOME/.local/bin/gh"
+  echo "[OK] gh installed ($(PATH="$HOME/.local/bin:$PATH" gh --version 2>/dev/null | head -1))"
+}
+
+# ── Gitea CLI (tea) ──────────────────────────────────────────────────────────
+# tea ships bare (uncompressed) binaries — no Homebrew core formula — so a
+# binary download from the official Gitea CDN works uniformly on every target.
+# Pinned to a known-good release (bump TEA_VERSION to upgrade); pinning avoids
+# GitHub API rate-limit failures and keeps installs deterministic across hosts.
+# On Ubuntu/amd64 the CDN URL resolves to:
+#   https://dl.gitea.com/tea/0.11.0/tea-0.11.0-linux-amd64
+TEA_VERSION="0.11.0"
+install_tea() {
+  command -v tea >/dev/null 2>&1 && return 0
+
+  forge_platform || return 1
+  command -v curl >/dev/null 2>&1 || { echo "[WARN] curl missing — cannot install tea"; return 1; }
+
+  local ver url tmpdir
+  ver="$TEA_VERSION"
+
+  echo "[INFO] Installing Gitea CLI (tea) v${ver}..."
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  # Primary: official Gitea CDN. Fallback: the GitHub release mirror.
+  url="https://dl.gitea.com/tea/${ver}/tea-${ver}-${FORGE_OS}-${FORGE_ARCH}"
+  if ! curl -fSL -o "${tmpdir}/tea" "$url"; then
+    url="https://github.com/gitea/tea/releases/download/v${ver}/tea-${ver}-${FORGE_OS}-${FORGE_ARCH}"
+    if ! curl -fSL -o "${tmpdir}/tea" "$url"; then
+      echo "[WARN] tea download failed: $url"; return 1
+    fi
+  fi
+
+  mkdir -p "$HOME/.local/bin"
+  cp "${tmpdir}/tea" "$HOME/.local/bin/tea"
+  chmod +x "$HOME/.local/bin/tea"
+  echo "[OK] tea installed ($(PATH="$HOME/.local/bin:$PATH" tea --version 2>/dev/null | head -1))"
+}
+
+# ── Claude Code CLI ──────────────────────────────────────────────────────────
+# Cross-platform installer for macOS, Linux, and WSL. The NAS gets Claude Code
+# from run_once_12-install-nas-tools.sh.tmpl instead, so skip Synology here to
+# avoid double-installing on an unsupported platform.
+install_claude_code() {
+  command -v claude >/dev/null 2>&1 && return 0
+
+  # Synology detection mirrors dot_claude/hooks/private_executable_enforce-opencommit.sh:
+  # the marker file is most robust, with a uname fallback.
+  if [[ -f /etc/synoinfo.conf ]] || uname -a 2>/dev/null | grep -qi 'synology'; then
+    echo "[INFO] Synology NAS detected — Claude Code handled by NAS tools script, skipping"
+    return 0
+  fi
+
+  command -v curl >/dev/null 2>&1 || { echo "[WARN] curl missing — cannot install Claude Code"; return 1; }
+
+  echo "[INFO] Installing Claude Code CLI..."
+  curl -fsSL https://claude.ai/install.sh | bash || { echo "[WARN] Claude Code install failed"; return 1; }
+  echo "[OK] Claude Code CLI installed"
+}
+
+# ── herdr ─────────────────────────────────────────────────────────────────────
+# Single-binary CLI (herdr.dev). The official installer is curl|sh and lands
+# the binary in ~/.local/bin, matching where the other CLIs above go. Darwin and
+# Linux only — the installer rejects other OSes, so gate explicitly and soft-fail.
+install_herdr() {
+  command -v herdr >/dev/null 2>&1 && return 0
+
+  case "$(uname -s)" in
+    Linux|Darwin) ;;
+    *) echo "[INFO] herdr unsupported on $(uname -s) — skipping"; return 0 ;;
+  esac
+  command -v curl >/dev/null 2>&1 || { echo "[WARN] curl missing — cannot install herdr"; return 1; }
+
+  echo "[INFO] Installing herdr..."
+  curl -fsSL https://herdr.dev/install.sh | sh || { echo "[WARN] herdr install failed"; return 1; }
+  echo "[OK] herdr installed ($(PATH="$HOME/.local/bin:$PATH" herdr --version 2>/dev/null | head -1 || echo "$HOME/.local/bin/herdr"))"
+}
+
+# ── npm global packages ──────────────────────────────────────────────────────
+install_npm_globals() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[INFO] npm not present — skipping global packages"
+    return 0
+  fi
+
+  mkdir -p "$HOME/.npm-global"
+  npm config set prefix "$HOME/.npm-global" >/dev/null 2>&1 || true
+
+  # NOTE: @anthropic-ai/claude-code is intentionally NOT here — install_claude_code
+  # installs the native build (~/.local/bin/claude). An npm global copy is redundant
+  # and makes the native CLI warn "Leftover npm global installation" on every startup.
+  # @musistudio/claude-code-router bundles better-sqlite3 (a native module): on glibc < 2.28
+  # there is no prebuilt binary and the distro compiler is too old, so every install fails
+  # after ~40s of compiling. Skip it there instead of retrying and warning each time.
+  local glibc_ver
+  glibc_ver=$(ldd --version 2>&1 | head -1 | grep -iE 'glibc|gnu libc' | grep -oE '[0-9]+\.[0-9]+$' || true)
+  for pkg in ccna @musistudio/claude-code-router opencommit; do
+    if [ "$pkg" = "@musistudio/claude-code-router" ] && [ -n "$glibc_ver" ] \
+       && [ "$glibc_ver" != "2.28" ] && [ "$(printf '%s\n2.28\n' "$glibc_ver" | sort -V | head -1)" = "$glibc_ver" ]; then
+      echo "[INFO] skipping $pkg: needs glibc >= 2.28 (native better-sqlite3), host has $glibc_ver"
+      continue
+    fi
+    npm list -g "$pkg" >/dev/null 2>&1 && continue
+    npm install -g "$pkg" || echo "[WARN] npm install -g $pkg failed (continuing)"
+  done
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+# Each installer is best-effort: log and move on rather than aborting the
+# whole bootstrap when one tool can't be fetched.
+install_nvim         || echo "[WARN] nvim install failed (continuing)"
+install_tmux         || echo "[WARN] tmux install failed (continuing)"
+install_tpm          || echo "[WARN] TPM install failed (continuing)"
+install_gh           || echo "[WARN] gh install failed (continuing)"
+install_tea          || echo "[WARN] tea install failed (continuing)"
+install_claude_code  || echo "[WARN] Claude Code install failed (continuing)"
+install_herdr        || echo "[WARN] herdr install failed (continuing)"
+install_npm_globals  || echo "[WARN] npm globals skipped (continuing)"
+
+exit 0
+
+{{- end -}}

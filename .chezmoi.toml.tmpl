@@ -1,0 +1,92 @@
+{{- /* hostclass: sticky per-machine role (never derived from the hostname, so no
+     personal hostnames live in this public file). promptChoiceOnce keeps an
+     already-stored value; --no-tty / bootstrap runs fall back to the default.
+     Windows is always "windows". */ -}}
+{{- $hostclass := "default" -}}
+{{- if eq .chezmoi.os "windows" -}}
+{{- $hostclass = "windows" -}}
+{{- else -}}
+{{- $hostclass = promptChoiceOnce . "hostclass" "Host class" (list "default" "macbook" "mac-studio" "nas" "code-server") "default" -}}
+{{- end -}}
+{{- /* age_recipient: public key of the private overlay's age identity. Blank =
+     no encryption configured (a plain public-repo-only machine). */ -}}
+{{- $ageRecipient := promptStringOnce . "age_recipient" "age recipient public key for the private overlay (leave blank for none)" "" -}}
+{{- /* noreply_email: GitHub noreply address used as the commit identity inside this
+     public repo's checkout (set as repo-local user.email by the git-hooks script). */ -}}
+{{- $noreplyEmail := promptStringOnce . "noreply_email" "GitHub noreply email for commits in this repo (leave blank to skip)" "" -}}
+{{- /* is_home: sticky. promptBoolOnce reads the existing config value when the key
+     is present, so a manually-set value in chezmoi.toml is never overwritten.
+     The default ($isHomeDefault) only applies on the very first init when the
+     key is genuinely absent — it auto-defaults macOS hosts to true, everything
+     else to false, without re-evaluating on subsequent runs. */ -}}
+{{- $isHomeDefault := or (eq $hostclass "mac-studio") (eq $hostclass "macbook") -}}
+{{- $isHome := promptBoolOnce . "is_home" "Is this the home machine?" $isHomeDefault -}}
+{{- $emailType := promptStringOnce . "email_type" "Email type (personal/work)" "personal" -}}
+{{- $syncSSH := promptBoolOnce . "sync_ssh" "Sync .ssh to this machine?" false -}}
+{{- $sshEmail := promptStringOnce . "ssh_email" "Email for SSH key (blank to skip keygen)" "" -}}
+{{- /* low_spec: sticky per-machine flag. true trims zsh (built-in prompt instead of
+     starship, no syntax-highlighting/autosuggestions/OMZ snippets). Default false. */ -}}
+{{- $lowSpec := promptBoolOnce . "low_spec" "Low-spec machine (trim zsh prompt/plugins)?" false -}}
+{{- /* enable_sshd: Windows only. Asked here (init time) so the bootstrap never has to
+     stop and ask mid-apply. Default true = previous unconditional behaviour. */ -}}
+{{- $enableSshd := true -}}
+{{- if eq .chezmoi.os "windows" -}}
+{{- $enableSshd = promptBoolOnce . "enable_sshd" "Enable OpenSSH server on this PC (install, start sshd, open TCP/22)?" true -}}
+{{- end -}}
+{{- /* Old system git (< 2.9, e.g. CentOS 7's 1.8) lacks `pull --autostash`, which
+     `chezmoi update` passes → "unknown option `autostash'". Route chezmoi's git
+     through ~/.local/bin/chezmoi-git (strips the flag, then runs the real git).
+     Only enabled once the shim has been deployed (stat), so a half-applied host
+     never points chezmoi at a missing file. Re-evaluated on every `chezmoi init`. */ -}}
+{{- $gitShim := "" -}}
+{{- if lookPath "git" -}}
+{{- $gitVer := output "git" "--version" | regexFind "[0-9]+\\.[0-9]+\\.[0-9]+" -}}
+{{- if and $gitVer (semverCompare "<2.9.0" $gitVer) (stat (joinPath .chezmoi.homeDir ".local/bin/chezmoi-git")) -}}
+{{- $gitShim = joinPath .chezmoi.homeDir ".local/bin/chezmoi-git" -}}
+{{- end -}}
+{{- end -}}
+tempDir = "~/tmp"
+{{- if ne .chezmoi.os "windows" }}
+# Fixed umask: otherwise target modes follow the invoking shell (Oracle Linux login
+# shells use 002 → 664/775, ssh/non-login use 022 → 644/755), so `chezmoi status`
+# flips between "clean" and "everything modified" depending on who runs it.
+umask = 0o022
+{{- end }}
+scriptTempDir = "~/tmp"
+{{- if $ageRecipient }}
+encryption = "age"
+
+[age]
+  identity = "~/.config/chezmoi/key.txt"
+  recipients = [{{ $ageRecipient | quote }}]
+{{- end }}
+
+[data]
+  hostclass = {{ $hostclass | quote }}
+  age_recipient = {{ $ageRecipient | quote }}
+  noreply_email = {{ $noreplyEmail | quote }}
+  email_type = {{ $emailType | quote }}
+  is_home   = {{ $isHome }}
+  sync_ssh  = {{ $syncSSH }}
+  ssh_email = {{ $sshEmail | quote }}
+  enable_sshd = {{ $enableSshd }}
+  low_spec  = {{ $lowSpec }}
+
+# Public repo: never auto-commit/auto-push. A plain `chezmoi add` must not publish
+# anything; commits go through the reviewed workflow + gate (see tools/).
+[git]
+    autoCommit = false
+    autoPush = false
+{{- if $gitShim }}
+    command = {{ $gitShim | quote }}
+{{- end }}
+
+{{- if eq .chezmoi.os "windows" }}
+# Run .ps1 scripts with ExecutionPolicy Bypass so the Windows bootstrap
+# (run_once_40-windows-setup.ps1.tmpl) can execute even when the system-wide
+# policy is Restricted (the Windows default). Use Windows PowerShell (powershell)
+# rather than pwsh — it ships with every Windows install, pwsh does not.
+[interpreters.ps1]
+    command = "powershell"
+    args = ["-NoLogo", "-ExecutionPolicy", "Bypass"]
+{{- end }}

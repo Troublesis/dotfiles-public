@@ -1,0 +1,415 @@
+# ============================================================
+# Ghostty config - migrated from Kitty + enhanced
+# ============================================================
+
+app-notifications = clipboard-copy,config-reload
+
+# ====================== Font and rendering ======================
+
+# Primary font (synced from Kitty)
+font-family = MesloLGS Nerd Font
+font-family-bold = MesloLGS Nerd Font Bold
+font-family-italic = MesloLGS Nerd Font Italic
+font-family-bold-italic = MesloLGS Nerd Font Italic
+
+# Fallback fonts (Chinese support)
+font-family = "PingFang SC":
+font-family = "Noto Sans CJK SC"
+
+# Allow synthetic styles when font lacks them
+font-synthetic-style = bold,italic,bold-italic
+
+# OpenType features for ligatures
+font-feature = calt, liga, dlig
+
+# Font size
+font-size = 18
+
+# Thicken font strokes to match Kitty's macos_thicken_font 0.40
+font-thicken = true
+font-thicken-strength = 180
+
+# Codepoint-to-font mapping (emoji and symbols)
+font-codepoint-map = "U+E0A0-U+E0A2,U+E0B0-U+E0B3=PowerlineSymbols"
+font-codepoint-map = "U+1F300-U+1F5FF=Apple Color Emoji"
+font-codepoint-map = "U+1F600-U+1F64F=Apple Color Emoji"
+font-codepoint-map = "U+E0A0-U+E0FF=JetBrainsMono Nerd Font"
+
+# Clipboard character replacement rules
+clipboard-codepoint-map = "U+2500=U+002D"
+clipboard-codepoint-map = "U+2502=U+007C"
+clipboard-codepoint-map = "U+2514=U+002B"
+clipboard-codepoint-map = "U+2518=U+002B"
+clipboard-codepoint-map = "U+03B1=alpha"
+clipboard-codepoint-map = "U+03B2=beta"
+clipboard-codepoint-map = "U+03B3=gamma"
+
+# Font thickening
+font-thicken = true
+font-thicken-strength = 255
+
+font-codepoint-map = "U+1F300-U+1F5FF=Apple Color Emoji"
+font-codepoint-map = "U+1F600-U+1F64F=Apple Color Emoji"
+
+# Ligature break at cursor
+font-shaping-break = cursor
+
+# ====================== Font fine-tuning ======================
+
+# Cell dimensions (synced from Kitty: adjust_line_height 150%, adjust_column_width 100%)
+adjust-cell-width = 0%
+adjust-cell-height = 0%
+
+# Character width method
+grapheme-width-method = unicode
+
+# ====================== Theme and colors ======================
+
+# Using manual Catppuccin Mocha palette (no theme override)
+# theme = Rose Pine
+
+foreground = #cdd6f4
+background = #151515
+selection-foreground = #3b82f6
+selection-background = #ffffff
+cursor-color = #f5e0dc
+cursor-text = #151515
+
+# Selection behavior
+selection-clear-on-typing = true
+selection-clear-on-copy = false
+selection-word-chars = "\t'\"|`|:;,()[]{}<>$"
+
+# Minimum contrast
+minimum-contrast = 1
+
+# Background image (disabled)
+background-image =
+background-image-opacity =
+background-image-position =
+background-image-fit = cover
+
+# 16-color palette (Catppuccin Mocha)
+palette = 0=#45475a
+palette = 1=#f38ba8
+palette = 2=#a6e3a1
+palette = 3=#f9e2af
+palette = 4=#89b4fa
+palette = 5=#f5c2e7
+palette = 6=#94e2d5
+palette = 7=#bac2de
+palette = 8=#585b70
+palette = 9=#f38ba8
+palette = 10=#a6e3a1
+palette = 11=#f9e2af
+palette = 12=#89b4fa
+palette = 13=#f5c2e7
+palette = 14=#94e2d5
+palette = 15=#a6adc8
+
+palette-generate = false
+palette-harmonious = false
+
+# ====================== Cursor ======================
+
+cursor-style = block_hollow
+cursor-style-blink = true
+cursor-opacity = 1
+cursor-click-to-move = true
+
+# ====================== Mouse ======================
+
+mouse-hide-while-typing = true
+scroll-to-bottom = keystroke,no-output
+mouse-shift-capture = false
+mouse-reporting = true
+mouse-scroll-multiplier = precision:0.7,discrete:4
+
+# ====================== Background and splits ======================
+
+background-opacity = 0.9
+background-opacity-cells = true
+background-blur = 10
+
+# Persistent opacity override: ghostty-toggle-opacity updates this file and
+# reloads config, so the transparent/opaque state survives restarts.
+config-file = ~/.config/ghostty/opacity.conf
+
+unfocused-split-opacity = 0.75
+unfocused-split-fill = "#0A0F1C"
+split-divider-color = "#444444"
+split-preserve-zoom = navigation
+
+# Search highlight colors
+search-foreground = "#000000"
+search-background = "#FFD54F"
+search-selected-foreground = "#000000"
+search-selected-background = "#FF7043"
+
+# ====================== Commands and notifications ======================
+
+command = /bin/zsh
+notify-on-command-finish = unfocused
+notify-on-command-finish-action = no-bell,notify
+notify-on-command-finish-after = 10s
+wait-after-command = true
+abnormal-command-exit-runtime = 250
+
+# ====================== Scrollback and links ======================
+
+scrollback-limit = 100000
+scrollbar = system
+link-url = true
+link-previews = true
+
+# ====================== Window settings ======================
+
+window-padding-x = 20
+window-padding-y = 0
+window-padding-balance = true
+window-padding-color = extend
+
+window-decoration = true
+window-vsync = true
+window-inherit-working-directory = true
+tab-inherit-working-directory = true
+window-inherit-font-size = false
+
+window-title-font-family =
+window-subtitle =
+# Initial size only used on first launch; window-save-state restores last size after that
+# window-width = 150
+# window-height = 50
+# Removed fixed position — macOS centers new windows by default
+# window-position-x = 250
+# window-position-y = 80
+
+window-save-state = always
+window-step-resize = true
+window-new-tab-position = current
+window-show-tab-bar = auto
+window-titlebar-background =
+window-titlebar-foreground =
+
+resize-overlay = always
+resize-overlay-position = center
+resize-overlay-duration = 1s
+
+maximize = false
+fullscreen = false
+title = ""
+
+confirm-close-surface = false
+quit-after-last-window-closed = true
+initial-window = true
+undo-timeout = 5s
+
+# ====================== Quick Terminal ======================
+
+keybind = ctrl+`=toggle_quick_terminal
+quick-terminal-position = bottom
+quick-terminal-size = 30%
+quick-terminal-animation-duration = 0.2
+quick-terminal-autohide = true
+quick-terminal-space-behavior = move
+quick-terminal-keyboard-interactivity = on-demand
+
+# ====================== macOS settings ======================
+
+macos-option-as-alt = true
+macos-titlebar-style = transparent
+macos-non-native-fullscreen = false
+macos-window-buttons = hidden
+macos-dock-drop-behavior = new-tab
+macos-window-shadow = true
+macos-hidden = never
+macos-applescript = true
+
+# ====================== Clipboard and security ======================
+
+clipboard-read = allow
+clipboard-write = allow
+clipboard-trim-trailing-spaces = true
+clipboard-paste-protection = true
+clipboard-paste-bracketed-safe = true
+
+copy-on-select = clipboard
+right-click-action = context-menu
+
+title-report = false
+image-storage-limit = 320000000
+
+# ====================== Shell integration ======================
+
+shell-integration = detect
+shell-integration-features = cursor,sudo,title,no-ssh-env,no-ssh-terminfo,path
+
+# ====================== Terminal settings ======================
+
+# Force kitty-compatible TERM so Yazi uses the KGP image path in Ghostty.
+# Yazi's docs explicitly use TERM=xterm-kitty as the compatibility workaround.
+# term = xterm-ghostty
+focus-follows-mouse = false
+desktop-notifications = true
+progress-style = true
+faint-opacity = 0.5
+async-backend = auto
+
+# ====================== Keybindings ======================
+
+# Reload config
+keybind = super+shift+,=reload_config
+
+# Open config
+keybind = super+,=open_config
+
+# Copy/paste
+keybind = copy=copy_to_clipboard:mixed
+keybind = paste=paste_from_clipboard
+keybind = performable:super+c=copy_to_clipboard:mixed
+keybind = performable:super+v=paste_from_clipboard
+keybind = super+shift+v=paste_from_selection
+
+# Selection with shift+arrow
+keybind = shift+arrow_left=adjust_selection:left
+keybind = shift+arrow_right=adjust_selection:right
+keybind = shift+arrow_up=adjust_selection:up
+keybind = shift+arrow_down=adjust_selection:down
+
+# Font size
+keybind = super+==increase_font_size:2
+keybind = super+-=decrease_font_size:2
+keybind = super+0=reset_font_size
+
+# Fullscreen
+keybind = super+ctrl+f=toggle_fullscreen
+keybind = super+enter=toggle_fullscreen
+
+# Command palette
+keybind = super+shift+p=toggle_command_palette
+
+# Quit
+keybind = super+q=quit
+
+# Undo/redo
+keybind = super+z=undo
+keybind = super+shift+z=redo
+
+# Inspector
+keybind = super+alt+i=inspector:toggle
+
+# Word jump (alt+arrow)
+keybind = alt+arrow_left=esc:b
+keybind = alt+arrow_right=esc:f
+
+# Scroll
+keybind = super+up=scroll_to_top
+keybind = super+down=scroll_to_bottom
+
+# Screen file export
+keybind = super+ctrl+shift+j=write_screen_file:copy,plain
+keybind = super+shift+j=write_screen_file:paste,plain
+keybind = super+alt+shift+j=write_screen_file:open,plain
+
+# Jump to prompt
+keybind = super+shift+arrow_up=jump_to_prompt:-1
+keybind = super+shift+arrow_down=jump_to_prompt:1
+
+# -- Splits --
+keybind = super+shift+==new_split:right
+keybind = super+shift+-=new_split:down
+keybind = ctrl+b>l=new_split:right
+keybind = super+n=new_split:right
+keybind = ctrl+b>h=new_split:left
+keybind = ctrl+b>j=new_split:down
+keybind = ctrl+b>k=new_split:up
+keybind = super+[=goto_split:previous
+keybind = super+]=goto_split:next
+
+# Navigate splits by direction
+keybind = super+arrow_left=goto_split:left
+keybind = super+arrow_down=goto_split:down
+keybind = super+arrow_up=goto_split:up
+keybind = super+arrow_right=goto_split:right
+
+# Alternative split navigation
+keybind = super+alt+arrow_up=goto_split:up
+keybind = super+alt+arrow_down=goto_split:down
+keybind = super+alt+arrow_left=goto_split:left
+keybind = super+alt+arrow_right=goto_split:right
+
+# Resize splits
+keybind = super+shift+arrow_left=resize_split:left,20
+keybind = super+shift+arrow_right=resize_split:right,20
+keybind = super+shift+arrow_up=resize_split:up,20
+keybind = super+shift+arrow_down=resize_split:down,20
+
+# Alternative resize
+keybind = super+ctrl+arrow_up=resize_split:up,10
+keybind = super+ctrl+arrow_down=resize_split:down,10
+keybind = super+ctrl+arrow_left=resize_split:left,10
+keybind = super+ctrl+arrow_right=resize_split:right,10
+
+# Equalize splits
+keybind = super+ctrl+==equalize_splits
+
+# -- Tabs --
+keybind = super+t=new_tab
+keybind = super+shift+[=previous_tab
+keybind = super+shift+]=next_tab
+keybind = ctrl+tab=next_tab
+
+# Tab by number
+keybind = super+digit_1=goto_tab:1
+keybind = super+1=goto_tab:1
+keybind = super+digit_2=goto_tab:2
+keybind = super+2=goto_tab:2
+keybind = super+digit_3=goto_tab:3
+keybind = super+3=goto_tab:3
+keybind = super+digit_4=goto_tab:4
+keybind = super+4=goto_tab:4
+keybind = super+digit_5=goto_tab:5
+keybind = super+5=goto_tab:5
+keybind = super+digit_6=goto_tab:6
+keybind = super+6=goto_tab:6
+keybind = super+digit_7=goto_tab:7
+keybind = super+7=goto_tab:7
+keybind = super+digit_8=goto_tab:8
+keybind = super+8=goto_tab:8
+keybind = super+9=last_tab
+
+# Close/undo tab
+keybind = super+alt+w=close_tab:this
+keybind = super+ctrl+z=undo
+
+# Restore last closed tab/window (Cmd+Shift+T, like browser)
+keybind = super+shift+t=undo
+
+# Toggle background transparency for ALL surfaces (Cmd+Shift+Y).
+# Runs ghostty-toggle-opacity which writes to opacity.conf and reloads config,
+# so every tab/split updates immediately and the state persists across restarts.
+keybind = super+shift+y=text:ghostty-toggle-opacity\n
+
+# -- Windows --
+keybind = super+shift+n=new_window
+keybind = super+w=close_surface
+keybind = super+shift+w=close_window
+
+# -- Search --
+keybind = super+f=start_search
+keybind = super+e=search_selection
+keybind = super+shift+f=end_search
+
+# keybind = escape=end_search
+
+keybind = super+g=navigate_search:next
+keybind = super+shift+g=navigate_search:previous
+
+# Quick terminal
+keybind = cmd+`=toggle_quick_terminal
+
+# New split right via cmd+shift+s
+keybind = super+shift+s=new_split:right
+
+# -- cmd+r -> rotate/cycle through splits --
+keybind = super+r=goto_split:next

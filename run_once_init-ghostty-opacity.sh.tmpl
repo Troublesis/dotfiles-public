@@ -1,0 +1,11 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/sh
+# Initialize Ghostty opacity override file if it doesn't exist.
+# This file is managed at runtime by ghostty-toggle-opacity.
+CONF="$HOME/.config/ghostty/opacity.conf"
+if [ ! -f "$CONF" ]; then
+    mkdir -p "$(dirname "$CONF")"
+    printf 'background-opacity = 0.9\n' > "$CONF"
+fi
+
+{{- end -}}

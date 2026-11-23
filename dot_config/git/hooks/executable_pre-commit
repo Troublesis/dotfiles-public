@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Global pre-commit hook: delegate to per-repo pre-commit framework if configured.
+[ -f .pre-commit-config.yaml ] || exit 0
+command -v pre-commit >/dev/null 2>&1 || {
+  echo "pre-commit not installed; skipping" >&2
+  exit 0
+}
+exec pre-commit run --hook-stage pre-commit

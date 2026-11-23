@@ -1,0 +1,25 @@
+#!/bin/sh
+# git shim for chezmoi on hosts with an old system git (< 2.9, e.g. CentOS 7's 1.8).
+# `chezmoi update` runs `git pull --autostash --rebase`; git < 2.9 forwards the
+# unknown --autostash to `git fetch` and dies ("unknown option `autostash'").
+# This drops --autostash and runs the real git. Selected via `[git] command` in
+# ~/.config/chezmoi/chezmoi.toml (written by .chezmoi.toml.tmpl on old-git hosts).
+# Also maps `--porcelain=v1` (git >= 2.11; chezmoi doctor) to plain `--porcelain`
+# and emulates a leading `-C <dir>` (added in git 1.8.5; chezmoi doctor uses it)
+# by cd-ing first. Trade-off: without autostash, `pull --rebase` refuses to run
+# on a dirty source tree.
+while [ "$1" = "-C" ] && [ $# -ge 2 ]; do
+  cd "$2" || exit 1
+  shift 2
+done
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+  a=$1; shift; i=$((i + 1))
+  case "$a" in
+    --autostash)      ;;
+    --porcelain=v1)   set -- "$@" "--porcelain" ;;
+    *)                set -- "$@" "$a" ;;
+  esac
+done
+exec git "$@"

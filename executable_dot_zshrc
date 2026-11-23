@@ -1,0 +1,281 @@
+# Guard: this file requires zsh. When sourced from bash/sh, hand off to an
+# interactive zsh login shell (TTY) or exit quietly (non-interactive).
+# shellcheck disable=SC2128,SC3028
+[ -z "${ZSH_VERSION:-}" ] && { [ -t 1 ] && exec zsh -l; return 2>/dev/null; }
+
+# --- Old system zsh (< 5.3, e.g. CentOS/Oracle Linux 7's 5.0.2): hand off to the static
+# zsh 5.8 the Linux bootstrap installs in ~/.local/bin, so zinit + plugins can load.
+# Interactive only and never for `zsh -ic 'cmd'` (exec would drop the command; zsh 5.0
+# does not expose ZSH_EXECUTION_STRING while rc files load, so /proc/$$/cmdline is read
+# instead). exec happens only if that zsh actually runs (else we stay here); ZSH_REEXEC
+# prevents loops. The login shell itself is never changed. No-op on hosts with zsh >= 5.3.
+if [[ -o interactive && -z "${ZSH_REEXEC:-}" && -x "$HOME/.local/bin/zsh" ]]; then
+    autoload -Uz is-at-least
+    if ! is-at-least 5.3 \
+       && [[ -z "${ZSH_EXECUTION_STRING:-}" ]] \
+       && ! { [[ -r /proc/$$/cmdline ]] && tr '\0' ' ' < /proc/$$/cmdline | grep -Eq '(^| )-[A-Za-z]*c'; } \
+       && "$HOME/.local/bin/zsh" -fc 'exit 0' 2>/dev/null; then
+        export ZSH_REEXEC=1
+        exec "$HOME/.local/bin/zsh"
+    fi
+fi
+
+# =============================================================================
+# Zsh Configuration (cross-platform orchestrator)
+# Managed by chezmoi — OS/host alternates in ~/.zsh/
+# -----------------------------------------------------------------------------
+# Load order (matters):
+#   1. State init                 — _post_zvm_hooks, starship flag
+#   2. Core autoloads             — compinit, add-zsh-hook, etc.
+#   3. TERM ghostty fallback      — before any tool reads $TERM
+#   4. platform.zsh               — helpers (append_path_if_dir, is_macos, ...)
+#   5. ~/.zsh_secrets             — MUST precede ai.zsh (CODEX_APIKEY expansion)
+#   6. Interactive PATH           — single existence-checked append
+#   7. Homebrew fpath             — before compinit
+#   8. compinit                   — cached; full rebuild once per 24h
+#   9. Zinit + plugins            — fzf-tab sync, vi-mode sync, async snippets
+#  10. Modules (explicit array)   — common, bindkey, docker, git, ai
+#  11. OS / host alternates       — may override module defaults
+#  12. Post-zvm hook flush        — fallback if vi-mode absent
+#  13. Deferred precmd-once       — starship init
+#  14. tmux auto-attach           — tmux-auto.zsh, always last
+# =============================================================================
+
+typeset -ga _post_zvm_hooks
+: ${_STARSHIP_PROMPT_READY:=}
+
+# --- Glob qualifier safety ---
+# Zinit's plugin loader uses bare glob qualifiers like *.plugin.zsh(DN).
+# If the parent shell has NO_BARE_GLOB_QUAL set (e.g. left over from an
+# `emulate sh` call in some tool), re-sourcing .zshrc breaks plugin loading
+# with "no matches found". BARE_GLOB_QUAL is zsh's default; enforce it here
+# so re-source is idempotent regardless of inherited state.
+setopt BARE_GLOB_QUAL
+
+# --- Re-source ~/.zshenv on reload ---
+# zsh sources .zshenv only at shell startup, NOT when this file is re-sourced
+# (e.g. the `r` alias = `source ~/.zshrc`). Pull it in here so one reload
+# refreshes everything it owns: XDG_CONFIG_HOME, TF_SHELL, PATH, and
+# ~/.zsh_secrets. .zshenv is idempotent (typeset -U PATH, :- guards), so this
+# is safe both at startup (harmless re-run) and on reload.
+[[ -f "$HOME/.zshenv" ]] && source "$HOME/.zshenv"
+
+# --- Core autoloads ---
+autoload -Uz is-at-least colors add-zsh-hook compinit
+
+# --- Fix FPATH for minimal/container Zsh installs ---
+# Only patch fpath if critical functions are missing (bare containers)
+# Avoids polluting fpath on full installs which triggers compaudit warnings
+if ! whence -w is-at-least &>/dev/null; then
+    for _zfpath in \
+        "/usr/share/zsh/functions" \
+        "/usr/share/zsh/${ZSH_VERSION}/functions"; do
+        [[ -d "$_zfpath" ]] && fpath+=("$_zfpath"/*(N/))
+    done
+    unset _zfpath
+    autoload -Uz is-at-least colors add-zsh-hook compinit
+fi
+
+# --- Missing-terminfo fallback (must run before any tool reads $TERM) ---
+# Terminal-specific TERM values get forwarded over ssh to hosts that lack the
+# terminfo entry (tmux: "missing or unsuitable terminal: tmux-256color"; vim/less/
+# clear: "unknown terminal type"). Map to a widely-available base ONLY when the
+# entry is really missing (infocmp fails), so hosts that have it are untouched.
+case "$TERM" in
+    xterm-ghostty|xterm-kitty|alacritty|wezterm|foot|rxvt-unicode-256color) _term_base=xterm-256color ;;
+    tmux-256color|tmux)                                                      _term_base=screen-256color ;;
+    *)                                                                       _term_base= ;;
+esac
+if [[ -n "$_term_base" ]] && ! infocmp "$TERM" >/dev/null 2>&1; then
+    export TERM="$_term_base"
+fi
+unset _term_base
+
+# --- Platform helpers (must precede secrets/PATH/os/host) ---
+# Defines: is_macos, is_linux, first_command_path, append_path_if_dir,
+#          queue_post_zvm_hook, load_moshi_webhook_token, ZSH_PLATFORM_OS/HOST
+source ~/.zsh/platform.zsh
+
+# --- Low-spec flag (chezmoi data .low_spec -> ZSH_LOW_SPEC=1) ---
+# 1 = built-in prompt instead of starship, skip per-keystroke plugins.
+[[ -r ~/.zsh/lowspec.zsh ]] && source ~/.zsh/lowspec.zsh
+: ${ZSH_LOW_SPEC:=0}
+
+# --- Secrets (MUST precede ai.zsh so CODEX_APIKEY/tokens resolve) ---
+[[ -f "$HOME/.zsh_secrets" ]] && source "$HOME/.zsh_secrets"
+
+# --- Interactive PATH (single source of truth, existence-checked & deduped) ---
+# Requires platform.zsh (append_path_if_dir). OS-specific PATH stays in os.zsh.
+append_path_if_dir \
+    "/usr/local/go/bin" \
+    "$HOME/.npm-global/bin" \
+    "$HOME/.local/bin" \
+    "$HOME/bin" \
+    "$HOME/go/bin" \
+    "$HOME/.opencode/bin" \
+    "$HOME/.docker/bin" \
+    "$HOME/.lmstudio/bin" \
+    "$HOME/.antigravity/antigravity/bin"
+
+# --- Zinit (plugin manager) ---
+ZINIT_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}/zinit/zinit.git"
+typeset -g ZSH_ZINIT_AVAILABLE=0
+
+# zinit needs zsh >= 5.3: on older zsh (CentOS 7 ships 5.0.2) it dies with
+# "(anon):2: unknown file attribute", so skip it there. Everything below is
+# already guarded by ZSH_ZINIT_AVAILABLE and degrades to plain zsh.
+autoload -Uz is-at-least
+if is-at-least 5.3; then
+    # Auto-bootstrap zinit when missing (handles fresh Linux hosts where the
+    # run_once bootstrap didn't run yet, or machines added after initial setup).
+    if [[ ! -r "${ZINIT_HOME}/zinit.zsh" ]] && command -v git >/dev/null 2>&1; then
+        print -P "%F{yellow}[zshrc] zinit missing — installing...%f" >&2
+        git clone --depth=1 https://github.com/zdharma-continuum/zinit.git "${ZINIT_HOME}" 2>/dev/null \
+            && print -P "%F{green}[zshrc] zinit installed — plugins will load now%f" >&2 \
+            || print -P "%F{red}[zshrc] zinit clone failed — vi-mode/completions won't load%f" >&2
+    fi
+
+    if [[ -r "${ZINIT_HOME}/zinit.zsh" ]]; then
+        source "${ZINIT_HOME}/zinit.zsh"
+        ZSH_ZINIT_AVAILABLE=1
+    fi
+fi
+
+function _run_post_zvm_hooks() {
+    local _hook
+
+    for _hook in "${_post_zvm_hooks[@]}"; do
+        if (( ${+functions[${_hook}]} )); then
+            "${_hook}"
+        fi
+    done
+
+    unset _hook
+}
+
+function _init_starship_prompt() {
+    if [[ -n "${_STARSHIP_PROMPT_READY:-}" ]]; then
+        return 0
+    fi
+    # Structural guard: starship init wraps zle-keymap-select; re-running it
+    # creates infinite call chains (FUNCNEST). Bail if the wrapper already exists.
+    if (( ${+functions[starship_zle-keymap-select-wrapped]} )); then
+        typeset -g _STARSHIP_PROMPT_READY=1
+        return 0
+    fi
+
+    if ! command -v starship >/dev/null 2>&1; then
+        return 1
+    fi
+
+    eval "$(starship init zsh)"
+    typeset -g _STARSHIP_PROMPT_READY=1
+}
+
+function zvm_after_init() {
+    _run_post_zvm_hooks
+}
+
+function _init_starship_prompt_precmd_once() {
+    _init_starship_prompt || return 0
+    add-zsh-hook -d precmd _init_starship_prompt_precmd_once
+}
+
+# --- Homebrew completions (cross-platform) ---
+# Apple Silicon: /opt/homebrew | Linux: /home/linuxbrew/.linuxbrew
+for _hb_prefix in /opt/homebrew /home/linuxbrew/.linuxbrew; do
+    if [[ -d "${_hb_prefix}/share/zsh/site-functions" ]]; then
+        fpath=("${_hb_prefix}/share/zsh/site-functions" $fpath)
+    fi
+done
+unset _hb_prefix
+
+# --- Completion (cached; full security rebuild once per 24h) ---
+# -C uses the existing dump without scanning fpath; -u skips insecure warning.
+# (N.mh+24) expands to the dump path only if it is older than 24h. Do NOT use
+# the (#q...) form inside [[ ]]: it needs extendedglob, otherwise it stays a
+# literal non-empty string and forces a full rebuild on every shell.
+typeset -g _zcompdump="${ZDOTDIR:-$HOME}/.zcompdump"
+# Declare first, assign separately: zsh 5.0 mis-parses a glob qualifier inside
+# `typeset -a x=( ... )` ("bad pattern"), but a plain array assignment is fine.
+typeset -ga _zcompdump_old
+_zcompdump_old=( ${_zcompdump}(N.mh+24) )
+if [[ ! -s "$_zcompdump" ]] || (( ${#_zcompdump_old} )); then
+    compinit -u -d "$_zcompdump"
+else
+    compinit -C -d "$_zcompdump"
+fi
+unset _zcompdump _zcompdump_old
+
+if (( ZSH_ZINIT_AVAILABLE )); then
+    # --- fzf-tab: must load synchronously after compinit, before vi-mode ---
+    # Turbo mode causes Tab binding to be lost when vi-mode overrides it later.
+    zinit light Aloxaf/fzf-tab
+
+    # --- Common plugins (shared across all machines) ---
+    # compinit already ran in phase 8; only replay queued completion defs.
+    zinit ice wait lucid atload "zicdreplay"
+    zinit light zsh-users/zsh-completions
+
+    (( ZSH_LOW_SPEC )) || { zinit ice wait lucid; zinit light zsh-users/zsh-autosuggestions }
+
+    # zsh-vi-mode loads synchronously so starship renders on first prompt.
+    # Async (wait lucid) delays zvm_after_init until after the first prompt is drawn,
+    # causing a blank prompt on terminal open until user presses Enter.
+    zinit light jeffreytse/zsh-vi-mode
+
+    if (( ! ZSH_LOW_SPEC )); then
+        zinit ice wait lucid
+        zinit snippet OMZP::git
+
+        zinit ice wait lucid
+        zinit snippet OMZP::sudo
+
+        zinit ice wait lucid
+        zinit snippet OMZP::command-not-found
+
+        # Syntax highlighting loads last
+        zinit ice wait lucid
+        zinit light zsh-users/zsh-syntax-highlighting
+    fi
+fi
+
+# =============================================================================
+# Source modules in explicit, deterministic order.
+# Excluded from this array (handled elsewhere):
+#   - platform.zsh : sourced in phase 4 (helpers needed by secrets/PATH/os/host)
+#   - os.zsh       : sourced below (chezmoi template; may override modules)
+#   - host.zsh     : sourced below (chezmoi template; host-specific overrides)
+#   - prompt.zsh   : optional shim, sourced below only if non-empty
+# Order matters: common defines ZSH_HAS_TTY used by later modules.
+# =============================================================================
+typeset -U _zsh_modules
+_zsh_modules=(common bindkey docker git ai)
+for _m in "${_zsh_modules[@]}"; do
+    [[ -r "$HOME/.zsh/${_m}.zsh" ]] && source "$HOME/.zsh/${_m}.zsh"
+done
+[[ -s "$HOME/.zsh/prompt.zsh" ]] && source "$HOME/.zsh/prompt.zsh"
+unset _m _zsh_modules
+
+# OS / host alternates (chezmoi templates) — sourced after modules so they win.
+source ~/.zsh/os.zsh
+[[ -r ~/.zsh/host.zsh ]] && source ~/.zsh/host.zsh   # absent for host classes whose settings live in the overlay
+# Optional private overlay (personal aliases/hosts) — absent on a public-only machine.
+[[ -r ~/.zsh/personal.zsh ]] && source ~/.zsh/personal.zsh
+
+if ! (( ${+functions[zvm_bindkey]} )); then
+    _run_post_zvm_hooks
+fi
+
+if (( ZSH_LOW_SPEC )); then
+    # starship forks a process on every prompt; a plain prompt costs nothing.
+    PROMPT=$'%F{blue}%~%f\n%F{green}❯%f '
+    unset RPROMPT
+else
+    add-zsh-hook precmd _init_starship_prompt_precmd_once
+fi
+
+# --- tmux auto-attach (MUST stay last: PATH/env/secrets/modules are loaded) ---
+# Attaches to the most recently used session, else creates one. Self-guarded
+# (interactive+TTY, not in tmux/IDE/herdr/agent shells). Opt out: NO_AUTO_TMUX=1.
+[[ -r "$HOME/.zsh/tmux-auto.zsh" ]] && source "$HOME/.zsh/tmux-auto.zsh"

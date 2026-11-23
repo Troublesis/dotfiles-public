@@ -1,0 +1,381 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/bash
+{{- if ne .chezmoi.os "windows" }}
+# End-of-bootstrap summary: surface anything that didn't fully complete
+# (missing age key → skipped encrypted files, failed packages, missing tools)
+# and tell the user exactly how to remediate each one.
+set -uo pipefail
+
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-bootstrap"
+STATE_FILE="$STATE_DIR/packages.state"
+KEY_FILE="$HOME/.config/chezmoi/key.txt"
+# Persistent marker (config, not cache) so the "optional extras" reminder is
+# shown only on the first bootstrap and survives a cache wipe. Cross-platform:
+# XDG_CONFIG_HOME on Linux, ~/.config fallback on macOS.
+EXTRAS_MARKER="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap/optional-extras-shown"
+
+# Pull package state if it exists.
+PKG_STATUS=""; PKG_MODE=""; PKG_FAILED=""; PKG_RECOVERED=""; PKG_NEED_PM=""; PKG_INSTALL_DIR=""
+if [[ -f "$STATE_FILE" ]]; then
+  PKG_STATUS=$(grep -E '^STATUS='    "$STATE_FILE" | cut -d= -f2-)
+  PKG_MODE=$(grep -E '^MODE='        "$STATE_FILE" | cut -d= -f2-)
+  PKG_FAILED=$(grep -E '^FAILED='    "$STATE_FILE" | cut -d= -f2-)
+  PKG_RECOVERED=$(grep -E '^RECOVERED=' "$STATE_FILE" | cut -d= -f2-)
+  PKG_NEED_PM=$(grep -E '^NEED_PM='  "$STATE_FILE" | cut -d= -f2-)
+  PKG_INSTALL_DIR=$(grep -E '^INSTALL_DIR=' "$STATE_FILE" | cut -d= -f2-)
+fi
+
+problems=0
+notes=()
+add_note() { notes+=("$1"); problems=$((problems+1)); }
+
+# A tool counts as "present" if it's on PATH OR installed into the bootstrap
+# install dir / a standard bin dir that may not yet be on PATH in the shell that
+# runs this summary. On the first apply (before the zsh re-login that prepends
+# ~/.local/bin) a user-local binary is installed but not yet on PATH — without
+# this it would be falsely reported as missing. Extra args are alternate binary
+# names (e.g. fd→fdfind, bat→batcat as packaged by apt).
+tool_present() {
+  local bin d
+  for bin in "$@"; do
+    command -v "$bin" >/dev/null 2>&1 && return 0
+  done
+  for d in "$PKG_INSTALL_DIR" "$HOME/.local/bin" /usr/local/bin /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin; do
+    [[ -z "$d" ]] && continue
+    for bin in "$@"; do
+      [[ -x "$d/$bin" ]] && return 0
+    done
+  done
+  return 1
+}
+
+# 1. Age key + encrypted files
+if [[ ! -f "$KEY_FILE" ]]; then
+  add_note "Age key missing → encrypted files skipped
+    Affected: ~/.zsh_secrets, ~/.config/aicommit2/config.ini, ~/.ssh/* (if sync_ssh)
+    Fix:  copy key.txt from another host:
+            mkdir -p ~/.config/chezmoi && chmod 700 ~/.config/chezmoi
+            scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
+            chmod 600 ~/.config/chezmoi/key.txt
+          then re-run:  chezmoi apply"
+fi
+
+# 1b. Age key present but malformed (e.g. mangled by copy/paste) → encrypted files skipped too
+if [[ -f "$KEY_FILE" ]] && ! grep -Eq '^AGE-SECRET-KEY-1[A-Z0-9]{58}[[:space:]]*$' "$KEY_FILE"; then
+  add_note "Age key INVALID → encrypted files skipped
+    $KEY_FILE has no well-formed 'AGE-SECRET-KEY-1…' line (74 chars, no spaces/line wraps).
+    Fix:  re-copy it byte-for-byte (do not paste into a terminal):
+            scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
+            chmod 600 ~/.config/chezmoi/key.txt
+          verify:  age-keygen -y ~/.config/chezmoi/key.txt   # prints the age1… public key
+          then re-run:  chezmoi apply"
+fi
+
+# 2. Package install state
+case "$PKG_STATUS" in
+  no-pm)        add_note "Package install skipped — no supported package manager (apt/dnf/yum/zypper/pacman/apk) detected." ;;
+esac
+
+# ca-certificates is required-but-soft-fail. On a system WITH a package manager,
+# a failure is a genuine TLS trust-store problem on a fixable host → keep it in
+# the ⚠ FAILED list. With NO package manager (no-pm / user mode) it could never
+# have been installed here, so demote it to an informational note instead of a
+# ⚠ failure. Split it out of PKG_FAILED accordingly.
+cacert_note=""
+pkg_failed_filtered="$PKG_FAILED"
+if [[ "$PKG_STATUS" == "no-pm" || "$PKG_MODE" == "user" ]]; then
+  if [[ " $PKG_FAILED " == *" ca-certificates "* ]]; then
+    cacert_note="ca-certificates"
+    # Remove the ca-certificates token, collapsing surrounding whitespace.
+    pkg_failed_filtered=$(printf '%s' " $PKG_FAILED " | sed 's/ ca-certificates / /g')
+    pkg_failed_filtered=$(printf '%s' "$pkg_failed_filtered" | xargs 2>/dev/null || printf '%s' "$pkg_failed_filtered")
+  fi
+fi
+if [[ -n "$pkg_failed_filtered" ]]; then
+  add_note "Packages that failed to install: $pkg_failed_filtered
+    Fix: install manually via your package manager, or re-run 'chezmoi apply' to retry."
+fi
+# NEED_PM is only informational — we ran in user mode and these tools require
+# the package manager. Treat as a note, not a problem.
+
+# 3. Required tools
+required_missing=()
+for cmd in zsh git chezmoi; do
+  tool_present "$cmd" || required_missing+=("$cmd")
+done
+if [[ ${#required_missing[@]} -gt 0 ]]; then
+  if [[ "$PKG_MODE" == "user" ]]; then
+    add_note "Required tools missing: ${required_missing[*]}
+    These require a system package manager.
+    Fix: install via root/sudo on this host, e.g.
+           sudo apt-get install ${required_missing[*]}
+         then re-run 'chezmoi apply'."
+  else
+    add_note "Required tools missing: ${required_missing[*]}"
+  fi
+fi
+
+# 3b. Core tools — installed by the bootstrap on EVERY host (Linux package
+# script + macOS Brewfile), so they are expected everywhere. Unlike the
+# optional list below, a missing core tool is a ⚠ problem with a reinstall
+# offer, not a passive note. tool_present() also matches binaries sitting in the
+# install dir but not yet on PATH (first-apply / pre-relogin user mode).
+core_missing=()
+for cmd in fzf eza zoxide tmux nvim starship; do
+  tool_present "$cmd" || core_missing+=("$cmd")
+done
+# When core tools are missing, offer an interactive reinstall at the end of
+# the summary (see offer_reinstall_core below). Each branch fills in:
+#   REINSTALL_CMD  — shown in the printed note (a human-runnable top-level
+#                    command; never invoked from inside this script, which is
+#                    itself running under `chezmoi apply` and holds the state
+#                    lock — a nested `chezmoi apply` would deadlock on it).
+#                    Used ONLY as documentation / a copy-paste fallback.
+#   DIRECT_CMD     — same as above, a no-state alternative shown in the note.
+# The interactive offer uses a SEPARATE, lock-free path (re-rendering the
+# idempotent installer template directly) so it can safely run mid-apply.
+REINSTALL_CMD=""; DIRECT_CMD=""
+if [[ ${#core_missing[@]} -gt 0 ]]; then
+{{- if eq .chezmoi.os "darwin" }}
+  # Translate command names to Homebrew formula names where they differ.
+  core_brew=()
+  for c in "${core_missing[@]}"; do
+    case "$c" in nvim) core_brew+=("neovim") ;; *) core_brew+=("$c") ;; esac
+  done
+  DIRECT_CMD="brew install ${core_brew[*]}"
+  REINSTALL_CMD="chezmoi state delete-bucket --bucket=scriptState && chezmoi apply"
+  add_note "Core tools missing (expected on every host): ${core_missing[*]}
+    Installed by the macOS Brewfile but not on PATH right now.
+    Reinstall (re-runs the bootstrap installers):
+        $REINSTALL_CMD
+    Or install directly:
+        $DIRECT_CMD"
+{{- else }}
+  # Linux: the installer lives at the source path below (run_once_before_* is
+  # gated by scriptState, so a plain `chezmoi apply` won't re-run it). The
+  # lock-free interactive offer re-renders and executes it directly; the
+  # printed note documents the manual state-reset path for copy-paste.
+  LINUX_INSTALLER_TMPL="{{ .chezmoi.sourceDir }}/run_once_before_10-install-packages-linux.sh.tmpl"
+  if [[ "$PKG_MODE" == "user" ]]; then
+    DIRECT_CMD='export PATH="$HOME/.local/bin:$PATH"  # then open a new login shell'
+    REINSTALL_CMD="chezmoi state delete-bucket --bucket=scriptState && chezmoi apply"
+    add_note "Core tools missing (expected on every host): ${core_missing[*]}
+    Installed user-local under ${PKG_INSTALL_DIR:-\$HOME/.local/bin}; if present
+    there they just aren't on PATH yet — open a new login shell, or:
+        $DIRECT_CMD
+    To reinstall (re-runs the idempotent installer):
+        $REINSTALL_CMD"
+  else
+    REINSTALL_CMD="chezmoi state delete-bucket --bucket=scriptState && chezmoi apply"
+    add_note "Core tools missing (expected on every host): ${core_missing[*]}
+    Installed by the Linux package bootstrap but not on PATH right now.
+    Reinstall (re-runs the idempotent installer; pkg manager + GitHub fallback):
+        $REINSTALL_CMD"
+  fi
+{{- end }}
+fi
+
+# 4. Optional but expected tools (modern CLI replacements). Informational only —
+# missing here is a note, never a ⚠. The core six (fzf/eza/zoxide/tmux/nvim/
+# starship) are handled above as required. Alternate names cover apt packaging
+# (fd→fdfind, bat→batcat).
+optional_missing=()
+tool_present rg         || optional_missing+=("rg")
+tool_present fd fdfind  || optional_missing+=("fd")
+tool_present bat batcat || optional_missing+=("bat")
+
+# 5. Tools intentionally NOT auto-installed — surfaced ONCE (first apply only)
+# as an "optional extras" reminder with per-OS install hints, then suppressed on
+# every later apply/czu. A missing entry here is informational, never a ⚠.
+# (ca-certificates is NOT here — it is a required-but-soft-fail package handled
+#  in run_once_before_10-install-packages-linux.sh, not an optional extra.)
+#   btop  — interactive resource monitor   (macOS + Linux)
+#   ncdu  — disk usage analyzer            (macOS + Linux)
+#   tree  — recursive directory listing    (macOS + Linux)
+{{- if ne .chezmoi.os "darwin" }}
+#   xclip — X11 clipboard integration      (Linux only; macOS uses pbcopy)
+{{- end }}
+optional_extras_missing=()
+command -v btop >/dev/null 2>&1 || optional_extras_missing+=("btop")
+command -v ncdu >/dev/null 2>&1 || optional_extras_missing+=("ncdu")
+command -v tree >/dev/null 2>&1 || optional_extras_missing+=("tree")
+{{- if ne .chezmoi.os "darwin" }}
+command -v xclip >/dev/null 2>&1 || optional_extras_missing+=("xclip")
+{{- end }}
+
+# Show-once gate: surface the reminder only when the marker is absent (first
+# bootstrap). Mark it consumed immediately — before any early exit below — so a
+# clean first apply still counts as "shown" and the list never nags again.
+# Delete "$EXTRAS_MARKER" to bring the reminder back.
+show_optional_extras=false
+if [[ ! -f "$EXTRAS_MARKER" ]]; then
+  [[ ${#optional_extras_missing[@]} -gt 0 ]] && show_optional_extras=true
+  mkdir -p "$(dirname "$EXTRAS_MARKER")" 2>/dev/null && : > "$EXTRAS_MARKER" 2>/dev/null || true
+fi
+
+# Print only if there's something to report
+has_info=false
+if [[ -n "$PKG_RECOVERED" || -n "$PKG_NEED_PM" || -n "$cacert_note" \
+      || ${#optional_missing[@]} -gt 0 || "$show_optional_extras" == true \
+      || "$PKG_MODE" == "user" ]]; then
+  has_info=true
+fi
+
+if [[ $problems -eq 0 && "$has_info" == false ]]; then
+  exit 0
+fi
+
+echo ""
+echo "════════════════ chezmoi bootstrap summary ════════════════"
+
+if [[ "$PKG_MODE" == "user" ]]; then
+  echo "ℹ Ran in user mode (no root/sudo). Binaries installed under ~/.local/bin."
+fi
+if [[ -n "$PKG_RECOVERED" ]]; then
+  echo "ℹ Installed via GitHub-release fallback: $PKG_RECOVERED"
+fi
+if [[ -n "$PKG_NEED_PM" ]]; then
+  echo "ℹ Skipped (need system package manager): $PKG_NEED_PM"
+  echo "  Run as root/sudo to install these, e.g. 'sudo apt-get install $PKG_NEED_PM'"
+fi
+if [[ -n "$cacert_note" ]]; then
+  echo "ℹ ca-certificates not verifiable and no package manager available to install it."
+  echo "  CA trust store is normally preinstalled; if TLS verification fails, install it"
+  echo "  on a host with a package manager (e.g. 'sudo apt-get install ca-certificates')."
+fi
+if [[ ${#optional_missing[@]} -gt 0 ]]; then
+  echo "ℹ Optional tools not on PATH: ${optional_missing[*]}"
+fi
+if [[ "$show_optional_extras" == true ]]; then
+  echo "ℹ Optional extras (not auto-installed) — install if desired:"
+  for tool in "${optional_extras_missing[@]}"; do
+    case "$tool" in
+      btop)
+        echo "    • btop  (interactive resource monitor)"
+{{- if eq .chezmoi.os "darwin" }}
+        echo "        brew:   brew install btop"
+{{- else }}
+        echo "        any distro, no root needed (static build from GitHub):"
+        echo "            echo btop >> ~/.config/chezmoi-bootstrap/optional-packages.list && chezmoi apply"
+        echo "        apt:    sudo apt-get install -y btop"
+        echo "        dnf:    sudo dnf install -y btop"
+        echo "        yum:    sudo yum install -y btop"
+        echo "        pacman: sudo pacman -S --noconfirm btop"
+        echo "        apk:    sudo apk add --no-cache btop"
+{{- end }}
+        ;;
+      ncdu)
+        echo "    • ncdu  (disk usage analyzer)"
+{{- if eq .chezmoi.os "darwin" }}
+        echo "        brew:   brew install ncdu"
+{{- else }}
+        echo "        any distro, no root needed (static build):"
+        echo "            echo ncdu >> ~/.config/chezmoi-bootstrap/optional-packages.list && chezmoi apply"
+        echo "        apt/dnf/yum: sudo <pm> install -y ncdu     pacman: sudo pacman -S ncdu     apk: sudo apk add ncdu"
+{{- end }}
+        ;;
+      tree)
+        echo "    • tree  (recursive directory listing)"
+{{- if eq .chezmoi.os "darwin" }}
+        echo "        brew:   brew install tree"
+{{- else }}
+        echo "        apt:    sudo apt-get install -y tree"
+        echo "        dnf:    sudo dnf install -y tree"
+        echo "        yum:    sudo yum install -y tree"
+        echo "        pacman: sudo pacman -S --noconfirm tree"
+        echo "        apk:    sudo apk add --no-cache tree"
+{{- end }}
+        ;;
+{{- if ne .chezmoi.os "darwin" }}
+      xclip)
+        echo "    • xclip  (X11 clipboard integration)"
+        echo "        apt:    sudo apt-get install -y xclip"
+        echo "        dnf:    sudo dnf install -y xclip"
+        echo "        yum:    sudo yum install -y xclip"
+        echo "        pacman: sudo pacman -S --noconfirm xclip"
+        echo "        apk:    sudo apk add --no-cache xclip"
+        ;;
+{{- end }}
+      *)
+        echo "    • $tool"
+        ;;
+    esac
+  done
+  echo "  (shown once — delete $EXTRAS_MARKER to see this again)"
+fi
+
+if [[ $problems -eq 0 ]]; then
+  echo "✓ Bootstrap complete — nothing outstanding."
+else
+  echo "⚠ $problems item(s) need your attention:"
+  echo ""
+  i=0
+  for n in "${notes[@]}"; do
+    i=$((i+1))
+    # indent every line
+    printf '  %d) ' "$i"
+    printf '%s\n' "$n" | sed '2,$s/^/     /'
+    echo ""
+  done
+
+  # ── Interactive reinstall offer for missing CORE tools ───────────────────
+  # When core tools are missing AND stdin/stdout are both TTYs (i.e. a human
+  # is running `czu`/`chezmoi update` by hand), offer to reinstall them on the
+  # spot instead of just printing a warning. Non-TTY / cron / CI runs keep the
+  # printed warning only — never block on a prompt.
+  offer_reinstall_core() {
+    [[ ${#core_missing[@]} -eq 0 ]] && return 0
+    [[ -z "$REINSTALL_CMD" ]]    && return 0
+    # Only prompt a real human on a real terminal.
+    { [[ -t 0 ]] && [[ -t 1 ]]; } || return 0
+    [[ -n "${CI:-}" ]] && return 0
+
+    echo "Reinstall the ${core_missing[*]} core tool(s) now? [y/N] "
+    local reply=""
+    # `read -r` without -e so it works in any shell running this script.
+    IFS= read -r reply || reply=""
+    case "${reply:-}" in
+      y|Y|yes|YES|Yes) ;;
+      *) echo "Skipped. Run the command above when ready."; return 0 ;;
+    esac
+
+{{- if eq .chezmoi.os "darwin" }}
+    # Darwin: `brew install` is fast and needs no chezmoi state reset. Prefer
+    # the direct command; fall back to the full state-reset + apply.
+    if [[ -n "$DIRECT_CMD" ]]; then
+      echo "Running: $DIRECT_CMD"
+      # shellcheck disable=SC2086  # intentional word-splitting of formula list
+      $DIRECT_CMD || echo "  ↳ brew install failed — try the state-reset path: $REINSTALL_CMD"
+    else
+      echo "Running: $REINSTALL_CMD"
+      sh -c "$REINSTALL_CMD"
+    fi
+{{- else }}
+    # Linux: re-run the idempotent installer DIRECTLY by rendering its template
+    # and piping to bash. This is deliberately lock-free — it does not call
+    # `chezmoi apply` (which would deadlock on the persistent-state lock that
+    # the OUTER apply already holds while this script runs) and it does not
+    # touch scriptState, so it never re-runs unrelated run_once_* scripts. The
+    # installer's check_and_install() is idempotent: tools already on PATH are
+    # skipped, only the missing ones are fetched (pkg manager, else GitHub
+    # release fallback). Falls back to the documented copy-paste command only
+    # if the template can't be rendered.
+    if command -v chezmoi >/dev/null 2>&1 && [[ -f "$LINUX_INSTALLER_TMPL" ]]; then
+      echo "Reinstalling via the Linux installer (idempotent; missing tools only)..."
+      if chezmoi execute-template < "$LINUX_INSTALLER_TMPL" 2>/tmp/chezmoi-reinstall.err | bash; then
+        echo "  ↳ ✓ reinstall pass complete — open a new shell if tools are still off PATH"
+      else
+        echo "  ↳ ✗ installer failed ($(head -1 /tmp/chezmoi-reinstall.err 2>/dev/null))"
+        echo "    Run the command above by hand: $REINSTALL_CMD"
+      fi
+    else
+      echo "  ↳ installer template not found at $LINUX_INSTALLER_TMPL — run by hand: $REINSTALL_CMD"
+    fi
+{{- end }}
+  }
+  offer_reinstall_core
+fi
+echo "═══════════════════════════════════════════════════════════"
+{{- end }}
+
+{{- end -}}

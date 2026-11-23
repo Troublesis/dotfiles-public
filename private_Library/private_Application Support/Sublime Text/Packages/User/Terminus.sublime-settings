@@ -1,0 +1,12 @@
+{
+    "view_settings": {
+        "font_face": "MesloLGS NF",
+    },
+    "theme": "adaptive",
+    "env": {
+        "LANG": "en_US.UTF-8"
+    },
+    "unicode_range": "0020-FFFF",
+    "no_antialias": false,
+    "no_blink": true,
+}

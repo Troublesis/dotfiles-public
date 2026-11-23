@@ -1,0 +1,10 @@
+# OS: Darwin (macOS)
+# Sourced by private_dot_tmux.conf.tmpl when .chezmoi.os == "darwin".
+
+set-option -g default-shell /bin/zsh
+
+# Ghostty is the primary terminal on macOS hosts.
+set-option -a terminal-features 'xterm-ghostty:RGB'
+
+# tmux-yank auto-detects pbcopy (+ reattach-to-user-namespace if installed)
+# for direct-attach copy. No @override_copy_command needed.

@@ -1,0 +1,24 @@
+#!/bin/zsh
+# Toggle Ghostty background opacity and persist the state across restarts.
+# Run this from a terminal or bind it to a macOS Shortcut for Cmd+Shift+T.
+# After toggling, Ghostty reloads its config automatically.
+
+CONF="$HOME/.config/ghostty/opacity.conf"
+TRANSPARENT=0.9
+OPAQUE=1
+
+current="$TRANSPARENT"
+if [[ -f "$CONF" ]]; then
+    current=$(awk -F'=' '/^background-opacity/{gsub(/ /,"",$2); print $2}' "$CONF")
+    [[ -z "$current" ]] && current="$TRANSPARENT"
+fi
+
+if awk "BEGIN{exit !($current >= 0.95)}"; then
+    printf 'background-opacity = %s\n' "$TRANSPARENT" > "$CONF"
+else
+    printf 'background-opacity = %s\n' "$OPAQUE" > "$CONF"
+fi
+
+# Trigger Ghostty config reload via the reload_config keybind (Cmd+Shift+,)
+osascript -e 'tell application "System Events" to tell process "Ghostty" to keystroke "," using {shift down, command down}' &>/dev/null &
+disown

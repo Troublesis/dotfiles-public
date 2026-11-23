@@ -1,0 +1,4 @@
+#!/bin/zsh
+# Linux-specific settings
+
+export YAZI_FILE_ONE="$(first_command_path file || printf '/usr/bin/file')"

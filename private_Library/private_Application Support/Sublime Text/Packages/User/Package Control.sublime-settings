@@ -1,0 +1,25 @@
+{
+	"bootstrapped": true,
+	"in_process_packages":
+	[
+	],
+	"installed_packages":
+	[
+		"Catppuccin color schemes",
+		"ConvertToUTF8",
+		"Jedi - Python autocompletion",
+		"JsPrettier",
+		"MarkdownEditing",
+		"MarkdownPreview",
+		"NeoVintageous",
+		"Package Control",
+		"python-black",
+		"SideBarEnhancements",
+		"SideBarTools",
+		"SublimeLinter-contrib-markdownlint",
+		"Terminus",
+		"TOML",
+		"Vintageous",
+		"Zen Tabs",
+	],
+}

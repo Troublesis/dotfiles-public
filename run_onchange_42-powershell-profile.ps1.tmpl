@@ -1,0 +1,23 @@
+{{- if eq .chezmoi.os "windows" -}}
+# Writes a stub AllHosts profile for pwsh 7 and Windows PowerShell 5.1 that
+# dot-sources ~/.config/powershell/profile.ps1. Documents is usually redirected
+# to OneDrive, so resolve the real path instead of letting chezmoi guess ~/Documents.
+# profile hash: {{ include "dot_config/powershell/profile.ps1" | sha256sum }}
+# Launched from pwsh 7, Windows PowerShell 5.1 inherits pwsh's PSModulePath and
+# loads the wrong (7.x) Microsoft.PowerShell.Security etc. -> "module could not be
+# loaded". Rebuild the stock Windows PowerShell module path from the registry.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath','User'),
+                           [Environment]::GetEnvironmentVariable('PSModulePath','Machine')) | Where-Object { $_ }) -join ';'
+}
+
+$docs = [Environment]::GetFolderPath('MyDocuments')
+$stub = '. "$HOME\.config\powershell\profile.ps1"'
+foreach ($d in 'PowerShell','WindowsPowerShell') {
+    $dir = Join-Path $docs $d
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $f = Join-Path $dir 'profile.ps1'
+    Set-Content -Path $f -Value "# Managed by chezmoi (run_onchange_42-powershell-profile)`n$stub" -Encoding UTF8
+    Write-Host "wrote $f"
+}
+{{- end }}

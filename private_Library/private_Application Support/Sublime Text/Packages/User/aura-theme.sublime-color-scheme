@@ -1,0 +1,30 @@
+{
+    "variables": {
+        "bg_color": "#151515"
+    },
+    "globals": {
+        // "background": "var(bg_color)",
+        "foreground": "#EEEEEE",
+        "caret": "white",
+        // "line_highlight": "color(var(bg_color) blend(#fff 8%))",
+        // "selection": "color(var(bg_color) blend(#fff 20%))",
+        // "selection_border": "color(var(bg_color) blend(#fff 30%))",
+        // "inactive_selection": "color(var(bg_color) blend(#fff 15%))",
+        // "gutter": "var(bg_color)",
+        "gutter_foreground": "#777777",
+        "invisibles": "#404040",
+        // "background_highlight": "var(bg_color)"
+    },
+    "rules": [
+        // {
+        //     "name": "Text",
+        //     "scope": "text",
+        //     "background": "var(bg_color)"
+        // },
+        // {
+        //     "name": "Source",
+        //     "scope": "source",
+        //     "background": "var(bg_color)"
+        // }
+    ]
+}

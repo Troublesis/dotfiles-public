@@ -1,0 +1,16 @@
+{{- if eq .chezmoi.os "windows" -}}
+# Loads ~/.config/cmd/aliases.cmd (doskey macros) into every cmd.exe session via the
+# per-user AutoRun value. Appends to an existing AutoRun instead of overwriting it.
+$aliasFile = Join-Path $HOME '.config\cmd\aliases.cmd'
+$key = 'HKCU:\Software\Microsoft\Command Processor'
+if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
+$current = (Get-ItemProperty -Path $key -Name AutoRun -ErrorAction SilentlyContinue).AutoRun
+if ($current -like '*\.config\cmd\aliases.cmd*') {
+    Write-Host "cmd.exe AutoRun already loads $aliasFile"
+} else {
+    $entry = '"{0}"' -f $aliasFile
+    $value = if ($current) { "$current & $entry" } else { $entry }
+    Set-ItemProperty -Path $key -Name AutoRun -Value $value
+    Write-Host "cmd.exe AutoRun set -> $value"
+}
+{{- end }}

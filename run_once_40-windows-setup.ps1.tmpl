@@ -1,0 +1,372 @@
+{{- if eq .chezmoi.os "windows" -}}
+# =============================================================================
+# Windows bootstrap - SSH server, winget toolchain, starship, psmux (default
+# multiplexer), Claude Code, Node.js + opencommit (oco), PATH, PowerShell profile.
+#
+# herdr is OPT-IN: set INSTALL_HERDR=1 to install it (skipped by default in
+# favor of psmux, the native Windows tmux). herdr ships no native ARM64 build,
+# so even with INSTALL_HERDR=1 it is skipped on ARM64 Windows.
+#
+# Runs once per machine (tracked by chezmoi state). Idempotent: each step
+# checks before installing / amending.
+# =============================================================================
+
+# Launched from pwsh 7, Windows PowerShell 5.1 inherits pwsh's PSModulePath and
+# loads the wrong (7.x) Microsoft.PowerShell.Security etc. -> "module could not be
+# loaded". Rebuild the stock Windows PowerShell module path from the registry.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath','User'),
+                           [Environment]::GetEnvironmentVariable('PSModulePath','Machine')) | Where-Object { $_ }) -join ';'
+}
+
+$ErrorActionPreference = "Stop"
+
+# Decisions made at `chezmoi init` time (see .chezmoi.toml.tmpl) — never asked here.
+# dig: configs created before these keys existed fall back to the old behaviour.
+$enableSshd = {{ if dig "enable_sshd" true . }}$true{{ else }}$false{{ end }}
+$sshEmail   = {{ dig "ssh_email" "" . | quote }}
+
+function Log-Info { param([string]$Msg) Write-Host "[INFO] $Msg" }
+function Log-Ok   { param([string]$Msg) Write-Host "[OK]   $Msg" }
+
+# Resolve the best REAL PowerShell binary to use as the SSH default shell.
+# sshd spawns DefaultShell via CreateProcess, which CANNOT execute the Microsoft
+# Store execution alias (~\AppData\Local\Microsoft\WindowsApps\pwsh.exe) — it is a
+# reparse point, so sessions silently fall back to cmd.exe. Return a genuine .exe:
+#   1. Standalone MSI:  C:\Program Files\PowerShell\7\pwsh.exe      (stable, ideal)
+#   2. MSIX/Store pkg:  <Get-AppxPackage InstallLocation>\pwsh.exe  (version-stamped;
+#                       re-resolved on every apply so it self-heals on a pwsh update)
+#   3. Windows PS 5.1:  $WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe (always present)
+function Resolve-SshShell {
+    $pwsh7 = Join-Path $env:ProgramFiles "PowerShell\7\pwsh.exe"
+    if (Test-Path $pwsh7) { return $pwsh7 }
+    try {
+        $pkg = Get-AppxPackage Microsoft.PowerShell -ErrorAction SilentlyContinue
+        if ($pkg -and $pkg.InstallLocation) {
+            $msix = Join-Path $pkg.InstallLocation "pwsh.exe"
+            if (Test-Path $msix) { return $msix }
+        }
+    } catch { }
+    return Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+
+# --- Admin detection (OpenSSH capability + sshd + firewall need elevation) ----
+$current = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = ([Security.Principal.WindowsPrincipal] $current).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# --- Self-elevate once so admin steps can run --------------------------------
+# winget machine-scope installs also prefer elevation. If the user declines
+# UAC, fall through and run un-elevated so non-admin steps still complete; the
+# OpenSSH block below is gated on $isAdmin and skips with a warning.
+if (-not $isAdmin) {
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        $relaunchArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        Write-Host "[INFO] Requesting elevation (admin needed for OpenSSH Server)..."
+        Start-Process -Wait -FilePath $psExe -Verb Runas -ArgumentList $relaunchArgs
+        exit 0
+    } catch {
+        Write-Warning "[WARN] Elevation declined - continuing without admin."
+        Write-Warning "       OpenSSH Server will be skipped; re-run elevated to enable sshd."
+    }
+}
+
+# =============================================================================
+# Admin scope: OpenSSH Server
+# =============================================================================
+if ($enableSshd -and $isAdmin) {
+    $sshCap = Get-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" -ErrorAction SilentlyContinue
+    if ($null -eq $sshCap -or $sshCap.State -ne "Installed") {
+        Log-Info "Installing OpenSSH Server capability"
+        Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0"
+        Log-Ok "OpenSSH Server installed"
+    } else {
+        Log-Ok "OpenSSH Server already installed"
+    }
+
+    if ((Get-Service sshd -ErrorAction SilentlyContinue).Status -ne "Running") {
+        Log-Info "Starting sshd"
+        Start-Service sshd
+    }
+    Set-Service -Name sshd -StartupType Automatic
+    Log-Ok "sshd running, startup = Automatic"
+
+    # Firewall rule allowing inbound TCP/22. The capability creates it disabled
+    # on some builds and scoped to the Private profile — but Windows 11 defaults
+    # new networks to Public, which would silently block inbound sshd. Force the
+    # rule to exist, be enabled, and apply to ALL profiles so SSH works regardless
+    # of the active network category.
+    $fw = Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
+    if ($null -eq $fw) {
+        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
+        Log-Ok "Created firewall rule for sshd (TCP/22, all profiles)"
+    } else {
+        if (-not $fw.Enabled) {
+            Enable-NetFirewallRule -Name "OpenSSH-Server-In-TCP"
+            Log-Ok "Enabled firewall rule for sshd (TCP/22)"
+        }
+        # Re-stamp to Any every run: cheap and survives a profile reset / rule edit.
+        Set-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -Profile Any -Enabled True
+        Log-Ok "Firewall rule for sshd enabled (all profiles)"
+    }
+
+    # Set the SSH default shell to PowerShell so remote sessions land in PS> rather
+    # than cmd. HKLM\SOFTWARE\OpenSSH\DefaultShell is read by sshd on each connect,
+    # so no service restart is needed. Re-resolved here every run via Resolve-SshShell
+    # so an MSIX version-stamped path self-heals after a pwsh update.
+    $sshReg = "HKLM:\SOFTWARE\OpenSSH"
+    $shell = Resolve-SshShell
+    if (-not (Test-Path $sshReg)) { New-Item -Path $sshReg -Force | Out-Null }
+    $current = (Get-ItemProperty -Path $sshReg -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
+    if ($current -ne $shell) {
+        Set-ItemProperty -Path $sshReg -Name DefaultShell -Value $shell -Type String
+        Log-Ok "SSH DefaultShell set to: $shell"
+    } else {
+        Log-Ok "SSH DefaultShell already set to: $shell"
+    }
+} elseif (-not $enableSshd) {
+    Log-Info "OpenSSH Server disabled (enable_sshd = false) - skipping"
+} else {
+    Write-Warning "[WARN] Skipping OpenSSH Server setup (not elevated)"
+}
+
+# =============================================================================
+# winget toolchain
+# =============================================================================
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Warning "[WARN] winget not found. Install 'App Installer' from the Microsoft Store,"
+    Write-Warning "       or winget-cli release assets, then re-run 'chezmoi apply'."
+} else {
+
+    foreach ($pkg in @(
+        @{ Id = "Git.Git";            Name = "Git" },
+        @{ Id = "Neovim.Neovim";      Name = "Neovim" },
+        @{ Id = "OpenJS.NodeJS.LTS";  Name = "Node.js (LTS)" },
+        @{ Id = "Starship.Starship";  Name = "Starship" },
+        @{ Id = "twpayne.chezmoi";    Name = "chezmoi" }
+    )) {
+        if (winget list --id $pkg.Id --source winget 2>$null | Select-String -Quiet $pkg.Id) {
+            Log-Ok "$($pkg.Name) already installed"
+        } else {
+            Log-Info "Installing $($pkg.Name) via winget"
+            winget install --id $pkg.Id --source winget --accept-package-agreements --accept-source-agreements
+            Log-Ok "$($pkg.Name) installed"
+        }
+    }
+}
+
+# =============================================================================
+# chezmoi: clone dotfiles
+# =============================================================================
+# Re-rendering this very script implies chezmoi is already initialized on this
+# host; only init if the source dir is absent.
+$chezmoiSrc = Join-Path $env:USERPROFILE ".local\share\chezmoi"
+if (-not (Test-Path $chezmoiSrc)) {
+    Log-Info "Initializing chezmoi from dotfiles repo"
+    chezmoi init https://github.com/Troublesis/dotfiles-public.git
+    Log-Ok "chezmoi initialized"
+} else {
+    Log-Ok "chezmoi source already present"
+}
+
+# =============================================================================
+# PowerShell 7 (pwsh) - psmux's preferred default-shell. psmux spawns
+# default-shell on every new pane; without pwsh it falls back to the slower
+# Windows PowerShell 5.1 (powershell.exe). winget installs the MSI into
+# C:\Program Files\PowerShell\7\pwsh.exe.
+# =============================================================================
+if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+    Log-Ok "pwsh (PowerShell 7) already installed"
+} else {
+    Log-Info "Installing PowerShell 7 via winget"
+    try {
+        winget install --id Microsoft.PowerShell --source winget --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
+        if ($LASTEXITCODE -eq 0) { Log-Ok "PowerShell 7 installed" }
+        else { Write-Warning "[WARN] winget install Microsoft.PowerShell exit $LASTEXITCODE" }
+    } catch {
+        Write-Warning "[WARN] PowerShell 7 install failed: $($_.Exception.Message)"
+        Write-Warning "       psmux will fall back to powershell.exe (5.1) until pwsh is on PATH."
+    }
+}
+
+# =============================================================================
+# psmux - native Windows tmux. Default multiplexer on Windows.
+# Reads ~/.tmux.conf natively. Ships psmux/pmux/tmux aliases + ARM64 builds
+# (unlike herdr). psmux is not in the default winget source, so install from
+# the GitHub release zip into ~\.local\bin (matches how run_once_30 installs
+# tmux from GitHub releases on Linux/macOS). Alternatives if this fails:
+#   cargo install psmux | scoop bucket add psmux https://github.com/psmux/scoop-psmux; scoop install psmux
+# =============================================================================
+if (Get-Command psmux -ErrorAction SilentlyContinue) {
+    Log-Ok "psmux already installed"
+} else {
+    Log-Info "Installing psmux from GitHub release"
+    $isArm64 = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64'
+    $arch = if ($isArm64) { "arm64" } else { "x64" }
+    $localBin = Join-Path $HOME ".local\bin"
+    if (-not (Test-Path $localBin)) { New-Item -ItemType Directory -Path $localBin -Force | Out-Null }
+    $zip = Join-Path $env:TEMP "psmux-windows-$arch.zip"
+    $tag = try { (Invoke-RestMethod "https://api.github.com/repos/psmux/psmux/releases/latest").tag_name } catch { "v3.3.6" }
+    $url = "https://github.com/psmux/psmux/releases/download/$tag/psmux-$tag-windows-$arch.zip"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $localBin -Force
+        Log-Ok "psmux extracted to $localBin"
+        # Verify the binary runs. ~\.local\bin is added to User PATH below and
+        # takes effect on the next shell launch, so resolve it directly here.
+        $psmuxExe = Join-Path $localBin "psmux.exe"
+        if (Test-Path $psmuxExe) {
+            & $psmuxExe --version *> $null
+            if ($LASTEXITCODE -eq 0) { Log-Ok "psmux runnable" } else { Write-Warning "[WARN] psmux present but --version failed (exit $LASTEXITCODE)" }
+        } else {
+            Write-Warning "[WARN] psmux zip did not contain psmux.exe"
+        }
+    } catch {
+        Write-Warning "[WARN] psmux install failed: $($_.Exception.Message)"
+        Write-Warning "       Manual: cargo install psmux  OR  scoop install psmux"
+    } finally {
+        if (Test-Path $zip) { Remove-Item $zip -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
+# herdr (herdr.dev) - OPT-IN alternative multiplexer. Off by default; psmux is
+# the native Windows default. Set INSTALL_HERDR=1 (User env var or shell) to
+# install. Also skipped on ARM64 — herdr ships no native ARM64 Windows build
+# (its installer forces x86_64 emulation, failing with STATUS_DLL_NOT_FOUND).
+# =============================================================================
+if (-not $env:INSTALL_HERDR) {
+    Log-Info "herdr install skipped (opt-in: set INSTALL_HERDR=1 to enable; psmux is the default)"
+} elseif (Get-Command herdr -ErrorAction SilentlyContinue) {
+    Log-Ok "herdr already installed"
+} else {
+    # NOTE: must check OS arch, not process arch. chezmoi runs this script via
+    # powershell.exe (5.1), which executes as an x86_64 emulated process on
+    # ARM64 Windows, so [RuntimeInformation]::ProcessArchitecture would return
+    # X64 and miss the skip.
+    $isArm64 = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64'
+
+    if ($isArm64) {
+        Write-Warning "[WARN] herdr: no native Windows ARM64 build (upstream). Skipping install."
+        Write-Warning "       Track https://herdr.dev for an arm64 release; psmux is installed as the default."
+    } else {
+        Log-Info "Installing herdr (INSTALL_HERDR=1)"
+        # Run the installer in a child PowerShell so its $ErrorActionPreference and
+        # native exit code don't leak into this script. irm|iex does NOT surface the
+        # installer's throw as a non-zero $LASTEXITCODE, so verify the binary
+        # actually runs afterward instead of trusting the pipeline.
+        & powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://herdr.dev/install.ps1 | iex"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[WARN] herdr installer exited with code $LASTEXITCODE"
+        }
+        # herdr.dev installs to ~\AppData\Local\Programs\Herdr\bin, which is not on
+        # PATH in this session yet. Resolve the binary directly to verify it runs.
+        $herdrExe = Join-Path $env:LOCALAPPDATA "Programs\Herdr\bin\herdr.exe"
+        if (Test-Path $herdrExe) {
+            & $herdrExe --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Log-Ok "herdr installed"
+            } else {
+                Write-Warning "[WARN] herdr binary present but --version failed (exit $LASTEXITCODE)"
+            }
+        } else {
+            Write-Warning "[WARN] herdr installer did not produce $herdrExe"
+            Write-Warning "       Re-run: powershell -ExecutionPolicy Bypass -c `"irm https://herdr.dev/install.ps1 | iex`""
+        }
+    }
+}
+
+# =============================================================================
+# Claude Code
+# =============================================================================
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Log-Info "Installing Claude Code"
+    irm https://claude.ai/install.ps1 | iex
+    Log-Ok "Claude Code installed"
+} else {
+    Log-Ok "Claude Code already installed"
+}
+
+# =============================================================================
+# Node global tools — opencommit (oco)
+# =============================================================================
+# `oco` is the opencommit CLI used by the opencommit sub-agent to write Conventional
+# Commits. private_dot_npmrc.tmpl sets the npm global prefix to ~\.npm-global on ALL
+# OSes, so global bins land in ~\.npm-global (added to User PATH below). Winget's Node
+# install isn't on $env:Path yet in this same-session process, so re-merge PATH first.
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    # Re-merge Machine + User PATH into this session in case Node was just installed
+    # by winget above and the current $env:Path is stale.
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+}
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    if (Get-Command oco -ErrorAction SilentlyContinue) {
+        Log-Ok "opencommit (oco) already installed"
+    } else {
+        Log-Info "Installing opencommit globally via npm"
+        try {
+            npm install -g opencommit
+            if ($LASTEXITCODE -eq 0) { Log-Ok "opencommit installed" }
+            else { Write-Warning "[WARN] npm install -g opencommit exit $LASTEXITCODE" }
+        } catch {
+            Write-Warning "[WARN] opencommit install failed: $($_.Exception.Message)"
+        }
+    }
+} else {
+    Write-Warning "[WARN] npm not found on PATH; skipping opencommit."
+    Write-Warning "       Open a new shell after setup so Node is on PATH, then: npm install -g opencommit"
+}
+
+# =============================================================================
+# User PATH consolidation
+# =============================================================================
+# Idempotently append the bin dirs the toolchain drops on disk. User scope
+# (no admin needed), takes effect on next shell launch.
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$paths = @(
+    "$HOME\bin",
+    "$HOME\.local\bin",
+    "$HOME\Program Files\Git\cmd",
+    # npm global bin dir. private_dot_npmrc.tmpl sets prefix=~/.npm-global on ALL
+    # OSes (cross-platform, not the Windows-default %AppData%\npm), so global bins
+    # like `oco` (opencommit) land here and need to be on PATH.
+    "$HOME\.npm-global"
+)
+foreach ($p in $paths) {
+    if ($userPath -notlike "*$p*") {
+        $userPath += ";$p"
+    }
+}
+[Environment]::SetEnvironmentVariable("Path", $userPath, "User")
+Log-Ok "User PATH updated"
+
+# =============================================================================
+# PowerShell profile — owned by chezmoi, not this script
+# =============================================================================
+# ~/Documents/PowerShell/profile.ps1 (AllHosts, loaded by pwsh 7 + psmux panes
+# + nested shells) is deployed directly from
+# ~/.local/share/chezmoi/Documents/PowerShell/profile.ps1.tmpl. It sources
+# secrets.ps1 / ai.ps1 / chezmoi.ps1 and inits starship with interactivity
+# guards. Editing it here would diverge from the managed source, so this
+# script deliberately leaves the profile alone.
+Log-Ok "PowerShell profile is chezmoi-managed (~/Documents/PowerShell/profile.ps1)"
+
+# --- SSH client key (ssh_email from init; blank = skip) ----------------------
+$sshKey = Join-Path $HOME ".ssh\id_ed25519"
+if ($sshEmail -and -not (Test-Path $sshKey)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $sshKey) | Out-Null
+    ssh-keygen -t ed25519 -C $sshEmail -f $sshKey -N '""' | Out-Null
+    if ($LASTEXITCODE -eq 0) { Log-Ok "Generated SSH key for $sshEmail" }
+    else { Write-Warning "[WARN] ssh-keygen exit $LASTEXITCODE" }
+} elseif ($sshEmail) {
+    Log-Ok "SSH key already present"
+}
+
+Write-Host ""
+Write-Host "Windows setup complete. Open a new terminal (or re-login) so the new"
+Write-Host "PATH and PowerShell profile take effect, then run: cc, glm, ds, zai,"
+Write-Host "grok, gpt, cg. psmux is the default multiplexer (`psmux`, `pmux`, or"
+Write-Host "`tmux`); vi/vim alias to nvim; `oco` writes Conventional Commits."
+Write-Host "For herdr instead: set INSTALL_HERDR=1 and re-run `chezmoi apply`."
+
+{{- end }}

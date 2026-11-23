@@ -1,0 +1,5 @@
+#!/bin/zsh
+# Default OS settings (fallback)
+
+alias fs="stat -c \"%s bytes\""
+export YAZI_FILE_ONE="$(first_command_path file || printf '/usr/bin/file')"

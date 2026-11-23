@@ -1,0 +1,58 @@
+#!/bin/zsh
+# Host-specific settings: code-server
+
+# --- Environment ---
+# EDITOR set cross-platform in common.zsh.
+export PASSWORD_STORE_GPG_OPTS='--no-throw-keyids'
+export CHOKIDAR_USEPOLLING=true
+export BUN_INSTALL="$HOME/.bun"
+export PYTHONPATH="${PYTHONPATH}:$PWD/src"
+
+# --- Host-specific PATH ---
+export PATH="\
+/yazi/target/release:\
+/helix/target/release:\
+$BUN_INSTALL/bin:\
+$HOME/.local/bin:\
+$PATH"
+
+# --- Code-server-only zinit plugins ---
+if (( ${+commands[zinit]} )); then
+    zinit ice wait lucid
+    zinit snippet OMZP::archlinux
+
+    zinit ice wait lucid
+    zinit snippet OMZP::aws
+
+    zinit ice wait lucid
+    zinit snippet OMZP::kubectl
+
+    zinit ice wait lucid
+    zinit snippet OMZP::kubectx
+fi
+
+# --- Aliases ---
+alias capslock="sudo killall -USR1 caps2esc"
+
+# --- Wayland support ---
+if [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
+    export MOZ_ENABLE_WAYLAND=1
+fi
+
+# --- SSH Agent (persistent across shells) ---
+SSH_ENV="$HOME/.ssh/agent.env"
+if [ -f "$SSH_ENV" ]; then
+    source "$SSH_ENV" > /dev/null 2>&1
+    # Verify the saved agent is still alive
+    if ! kill -0 "$SSH_AGENT_PID" 2>/dev/null; then
+        eval "$(ssh-agent -s)" > /dev/null
+        echo "export SSH_AUTH_SOCK=$SSH_AUTH_SOCK" > "$SSH_ENV"
+        echo "export SSH_AGENT_PID=$SSH_AGENT_PID" >> "$SSH_ENV"
+        ssh-add ~/.ssh/id_ed25519 2>/dev/null
+    fi
+else
+    eval "$(ssh-agent -s)" > /dev/null
+    echo "export SSH_AUTH_SOCK=$SSH_AUTH_SOCK" > "$SSH_ENV"
+    echo "export SSH_AGENT_PID=$SSH_AGENT_PID" >> "$SSH_ENV"
+    ssh-add ~/.ssh/id_ed25519 2>/dev/null
+fi

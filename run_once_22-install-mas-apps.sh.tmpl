@@ -1,0 +1,47 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/bash
+{{- if eq .chezmoi.os "darwin" }}
+set -euo pipefail
+
+command -v mas >/dev/null 2>&1 || exit 0
+mas config >/dev/null 2>&1 || exit 0
+
+mas_is_installed() {
+  local name="$1"
+  # Filesystem check — independent of Spotlight indexing
+  [[ -d "/Applications/${name}.app" ]] || [[ -d "${HOME}/Applications/${name}.app" ]]
+}
+
+mas_install_if_needed() {
+  local id="$1"
+  local name="$2"
+
+  if mas_is_installed "${name}"; then
+    # Installed — check for updates via mas outdated (also needs Spotlight, but
+    # mas upgrade by ID works regardless, so we try it and let it no-op if current)
+    if mas outdated 2>/dev/null | grep -q "^${id}\b"; then
+      echo "Updating: ${name} (${id})"
+      mas upgrade "${id}" 2>/dev/null || true
+    else
+      echo "Up-to-date, skipping: ${name} (${id})"
+    fi
+  else
+    echo "Installing: ${name} (${id})"
+    mas install "${id}" 2>/dev/null || true
+  fi
+}
+
+mas_install_if_needed 1507782672 "Pixea"
+mas_install_if_needed 1586435171 "Actions"
+mas_install_if_needed 409183694  "Keynote"
+mas_install_if_needed 409201541  "Pages"
+mas_install_if_needed 409203825  "Numbers"
+
+{{- if eq .hostclass "mac-studio" }}
+mas_install_if_needed 1085978097 "Pythonista 3"
+mas_install_if_needed 6443975850 "SenPlayer"
+
+{{- end }}
+{{- end }}
+
+{{- end -}}

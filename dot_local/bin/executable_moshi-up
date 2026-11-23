@@ -1,0 +1,38 @@
+#!/bin/sh
+# moshi-up — keep the moshi-hook daemon alive in a detached tmux session.
+#
+# Replaces the `brew services start moshi-hook` keepalive from the moshi skill,
+# which doesn't apply on this no-systemd host (PID 1 is sshd). The daemon runs in
+# the FOREGROUND of a restart loop inside tmux session "moshi", so it survives
+# terminal exit and auto-restarts if it dies.
+#
+#   moshi-up            start (idempotent — no-op if session already exists)
+#   tmux attach -t moshi   watch the daemon log live
+#   moshi logs -f          tail via the daemon's own log
+#   tmux kill-session -t moshi   stop it
+#
+# Port: MOSHI_HOOK_GATEWAY_LISTEN=127.0.0.1:0 (set in ~/.zshenv) makes the OS
+# auto-pick a free gateway port each launch — no fixed-port collisions.
+
+set -eu
+
+SESSION="moshi"
+BIN="${MOSHI_BIN:-$HOME/.local/bin/moshi}"
+
+# Idempotent: nothing to do if the supervisor session already exists.
+if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "moshi supervisor already running (tmux session: $SESSION)"
+  exit 0
+fi
+
+if [ ! -x "$BIN" ]; then
+  echo "moshi-up: moshi binary not found at $BIN" >&2
+  exit 1
+fi
+
+# Restart loop as the session's single window. `setsid`-free: tmux detaches it.
+tmux new-session -d -s "$SESSION" "while true; do $BIN serve; echo 'moshi serve exited (\$?), restarting in 2s...'; sleep 2; done"
+
+echo "moshi supervisor started (tmux session: $SESSION)"
+echo "  watch:  tmux attach -t $SESSION"
+echo "  status: moshi status"

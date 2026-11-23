@@ -1,0 +1,39 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/bash
+set -euo pipefail
+
+# SSH keygen — email is collected up front by .chezmoi.toml.tmpl
+# (promptStringOnce ssh_email). Leave it blank to skip keygen on this host.
+
+# The deployed ~/.ssh/config multiplexes connections with
+# `ControlPath ~/.ssh/sockets/%r@%h-%p` (Host *). OpenSSH never creates this
+# directory itself, so on a fresh machine the first multiplexed SSH fails with
+# "unix_listener: cannot bind to path .../sockets/...: No such file or directory"
+# — which breaks `czu` (git pull over SSH). Create it before anything else, and
+# run this even when a key already exists (hence: before the early-exit below).
+mkdir -p "$HOME/.ssh/sockets"
+chmod 700 "$HOME/.ssh" "$HOME/.ssh/sockets" 2>/dev/null || true
+
+[ -f "$HOME/.ssh/id_ed25519" ] && exit 0
+
+ssh_email={{ .ssh_email | quote }}
+if [ -z "$ssh_email" ]; then
+  echo "[INFO] No ssh_email configured — skipping SSH keygen."
+  echo "       Set one later with:  chezmoi init   (re-prompts for ssh_email)"
+  exit 0
+fi
+
+echo "[INFO] Generating ed25519 key for $ssh_email..."
+ssh-keygen -t ed25519 -C "$ssh_email" -f "$HOME/.ssh/id_ed25519" -N ""
+
+# ssh-agent / ssh-add are best-effort — they noisily fail in container / non-TTY
+# contexts (e.g. curl-pipe bootstrap), so guard and swallow errors.
+if [ -t 1 ] && command -v ssh-agent >/dev/null 2>&1; then
+  eval "$(ssh-agent -s)" >/dev/null 2>&1 || true
+  ssh-add "$HOME/.ssh/id_ed25519" 2>/dev/null || true
+fi
+
+echo "SSH public key:"
+cat "$HOME/.ssh/id_ed25519.pub"
+
+{{- end -}}

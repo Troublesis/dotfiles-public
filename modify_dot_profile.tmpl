@@ -1,0 +1,52 @@
+{{- if ne .chezmoi.os "windows" -}}
+#!/bin/sh
+# modify_dot_profile.tmpl
+#
+# Manage ~/.profile WITHOUT owning the whole file.
+#
+# chezmoi feeds the current file contents on stdin and uses our stdout as the
+# new file. We preserve anything the OS skeleton or other installers (LM Studio,
+# conda, rustup, ...) appended, and only ensure ONE idempotent, marker-guarded
+# block. This stops the perpetual drift a full-file template caused by fighting
+# external writers (macOS installers; code-server/NAS containers that regenerate
+# the skeleton on restart).
+#
+# NOTE: heredocs are written straight to stdout, never nested inside $(...).
+# macOS bash 3.2 misparses here-docs inside command substitution.
+set -eu
+
+BEGIN="# >>> chezmoi managed: profile block >>>"
+END="# <<< chezmoi managed: profile block <<<"
+
+# Echo existing contents with any previous managed block stripped out.
+awk -v b="$BEGIN" -v e="$END" '
+  $0 == b { inblk = 1; next }
+  inblk && $0 == e { inblk = 0; next }
+  !inblk { print }
+'
+
+# Append a single canonical managed block for THIS machine.
+# Unsupported targets emit nothing -> pure pass-through, no drift.
+{{ if or (eq .hostclass "nas") (eq .chezmoi.os "linux") -}}
+cat <<'BLOCK'
+# >>> chezmoi managed: profile block >>>
+# exec zsh for interactive login shells where the login shell is still bash/sh.
+# No-op for non-interactive/non-TTY sessions, or when already running zsh.
+if [ -z "${ZSH_VERSION:-}" ] && [ -t 1 ] && command -v zsh >/dev/null 2>&1; then
+  exec zsh -l
+fi
+# <<< chezmoi managed: profile block <<<
+BLOCK
+{{- else if eq .chezmoi.os "darwin" }}
+cat <<'BLOCK'
+# >>> chezmoi managed: profile block >>>
+# LM Studio CLI (lms) - appended idempotently so re-installs do not cause drift.
+case ":${PATH}:" in
+  *":${HOME}/.lmstudio/bin:"*) ;;
+  *) export PATH="${PATH}:${HOME}/.lmstudio/bin" ;;
+esac
+# <<< chezmoi managed: profile block <<<
+BLOCK
+{{- end }}
+
+{{- end -}}

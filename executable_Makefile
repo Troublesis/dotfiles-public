@@ -1,0 +1,14 @@
+YELLOW := \033[0;33m
+NC := \033[0m
+
+acp: ## Git add all, commit, and push
+	@git status
+	@read -p "Proceed with commit? (y/n): " confirm && \
+	if [ "$$confirm" = "y" ]; then \
+		git add --all && \
+		git status && \
+		git commit && \
+		git push; \
+	else \
+		echo "${YELLOW}Commit cancelled${NC}"; \
+	fi

@@ -1,0 +1,3 @@
+{{- /* Rendered from chezmoi data .low_spec (get: safe when the key is absent).
+       Runtime override for A/B tests: ZSH_LOW_SPEC=0 zsh */ -}}
+{{ if get . "low_spec" }}: ${ZSH_LOW_SPEC:=1}{{ else }}: ${ZSH_LOW_SPEC:=0}{{ end }}

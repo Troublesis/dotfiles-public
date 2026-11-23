@@ -1,0 +1,14 @@
+{{- if eq .chezmoi.os "windows" -}}
+# Optional private overlay (secrets + personal data), applied on top of this public repo.
+# No-op when the overlay clone is absent. Own persistent-state file: a nested apply would
+# otherwise deadlock on the outer run's state lock.
+$overlay = if ($env:DOTFILES_OVERLAY_DIR) { $env:DOTFILES_OVERLAY_DIR } else { Join-Path $env:USERPROFILE ".local\share\dotfiles-private" }
+if (-not (Test-Path (Join-Path $overlay ".git"))) { exit 0 }
+
+git -C $overlay pull --ff-only --quiet 2>$null
+if ($LASTEXITCODE -ne 0) { Write-Warning "private-overlay: could not fast-forward $overlay (offline or diverged) - applying the checked-out state." }
+
+$state = Join-Path $env:LOCALAPPDATA "chezmoi-overlay"
+New-Item -ItemType Directory -Force -Path $state | Out-Null
+chezmoi apply --source $overlay --persistent-state (Join-Path $state "chezmoistate.boltdb") --force
+{{- end -}}

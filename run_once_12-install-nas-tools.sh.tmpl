@@ -1,0 +1,68 @@
+{{- if eq .hostclass "nas" -}}
+#!/bin/bash
+set -euo pipefail
+
+# NAS-specific tool installations (Synology DSM)
+# Runs only when hostclass == "nas"
+
+# ── Claude Code CLI ──────────────────────────────────────────────────────────
+install_claude_code() {
+  command -v claude >/dev/null 2>&1 && return 0
+
+  echo "[INFO] Installing Claude Code CLI..."
+  curl -fsSL https://claude.ai/install.sh | bash
+  echo "[OK] Claude Code CLI installed"
+}
+
+# ── Go (latest stable) ───────────────────────────────────────────────────────
+install_go() {
+  command -v go >/dev/null 2>&1 && return 0
+
+  echo "[INFO] Installing Go (latest stable)..."
+  local go_version go_tar tmpdir
+  go_version="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+  go_tar="${tmpdir}/${go_version}.linux-amd64.tar.gz"
+
+  curl -fSL -o "$go_tar" "https://go.dev/dl/${go_version}.linux-amd64.tar.gz"
+
+  # Install to ~/.local/go (system partition is read-only on Synology)
+  rm -rf "$HOME/.local/go"
+  tar -C "$HOME/.local" -xzf "$go_tar"
+
+  # Persist PATH in .zshenv
+  if ! grep -q '.local/go/bin' "$HOME/.zshenv" 2>/dev/null; then
+    printf '\nexport PATH="$HOME/.local/go/bin:$PATH"\n' >> "$HOME/.zshenv"
+  fi
+
+  # Ensure GOPATH/bin is available for chezmoi install
+  if ! grep -q 'go/bin' "$HOME/.zshenv" 2>/dev/null; then
+    printf '\nexport PATH="$HOME/go/bin:$PATH"\n' >> "$HOME/.zshenv"
+  fi
+
+  export PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH"
+  echo "[OK] Go installed ($(go version))"
+}
+
+# ── chezmoi (from source) ────────────────────────────────────────────────────
+install_chezmoi_from_source() {
+  command -v chezmoi >/dev/null 2>&1 && return 0
+
+  echo "[INFO] Installing chezmoi from source..."
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  git clone -q https://github.com/twpayne/chezmoi.git "$tmpdir/chezmoi"
+  cd "$tmpdir/chezmoi"
+  PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" make install-from-git-working-copy
+
+  echo "[OK] chezmoi installed from source ($(chezmoi --version))"
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+install_claude_code
+install_go
+install_chezmoi_from_source
+{{- end -}}

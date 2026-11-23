@@ -1,0 +1,763 @@
+{{- if eq .chezmoi.os "linux" -}}
+#!/bin/bash
+# optional-packages fingerprint (a change re-runs this script — chezmoi run_once keys
+# on rendered content): {{ output "sh" "-c" "cat \"${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap/optional-packages.list\" 2>/dev/null || true" | sha256sum }}
+# Install baseline packages on Linux.
+#
+# Two modes:
+#   1. Privileged (root, or passwordless sudo/doas): install via the system
+#      package manager into /usr/local/bin where applicable.
+#   2. Unprivileged: skip the package manager entirely and install static
+#      binaries from GitHub releases into ~/.local/bin (which is already on
+#      PATH via .zshrc). Failures are non-fatal and surfaced by
+#      run_after_99-bootstrap-summary.sh.
+set -uo pipefail
+
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-bootstrap"
+STATE_FILE="$STATE_DIR/packages.state"
+mkdir -p "$STATE_DIR"
+
+# ── Privilege detection ──────────────────────────────────────────────────────
+SUDO=""
+PRIV_MODE="user"   # "system" or "user"
+if [[ "$(id -u)" -eq 0 ]]; then
+  SUDO=""; PRIV_MODE="system"
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  SUDO="sudo"; PRIV_MODE="system"
+elif command -v doas >/dev/null 2>&1 && doas -n true 2>/dev/null; then
+  SUDO="doas"; PRIV_MODE="system"
+fi
+
+if [[ "$PRIV_MODE" == "system" ]]; then
+  INSTALL_DIR="/usr/local/bin"
+else
+  INSTALL_DIR="$HOME/.local/bin"
+  mkdir -p "$INSTALL_DIR"
+  echo "ℹ No root/passwordless sudo — installing user-local binaries to $INSTALL_DIR"
+fi
+
+# ── Package manager detection (only meaningful in system mode) ───────────────
+PM=""
+if [[ "$PRIV_MODE" == "system" ]]; then
+  if   command -v apt-get >/dev/null 2>&1; then PM="apt"
+  elif command -v dnf     >/dev/null 2>&1; then PM="dnf"
+  elif command -v yum     >/dev/null 2>&1; then PM="yum"   # CentOS/RHEL 7 and older
+  elif command -v zypper  >/dev/null 2>&1; then PM="zypper"
+  elif command -v pacman  >/dev/null 2>&1; then PM="pacman"
+  elif command -v apk     >/dev/null 2>&1; then PM="apk"
+  fi
+fi
+
+# ── Arch normalisation for GitHub-release assets ─────────────────────────────
+case "$(uname -m)" in
+  x86_64|amd64)   GH_ARCH="x86_64"; GH_ARCH_ALT="amd64" ;;
+  aarch64|arm64)  GH_ARCH="aarch64"; GH_ARCH_ALT="arm64" ;;
+  *)              GH_ARCH=""; GH_ARCH_ALT="" ;;
+esac
+
+ALREADY=()
+INSTALLED=()       # via package manager
+RECOVERED=()       # via GitHub-release fallback
+FAILED=()          # could not install via any path
+NEED_PM=()         # would need the package manager (system tool, no static binary)
+LAST_ERR=""
+
+# ── Package index refresh (system mode only) ─────────────────────────────────
+if [[ "$PRIV_MODE" == "system" && -n "$PM" ]]; then
+  echo "Refreshing $PM package index..."
+  update_err=""
+  case "$PM" in
+    apt)    update_err=$($SUDO env DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 >/dev/null) || true ;;
+    dnf)    update_err=$($SUDO dnf check-update 2>&1 >/dev/null) || true ;;
+    yum)    update_err=$($SUDO yum -q check-update 2>&1 >/dev/null) || true ;;
+    zypper) update_err=$($SUDO zypper --non-interactive refresh 2>&1 >/dev/null) || true ;;
+    pacman) update_err=$($SUDO pacman -Sy --noconfirm 2>&1 >/dev/null) || true ;;
+    apk)    update_err=$($SUDO apk update 2>&1 >/dev/null) || true ;;
+  esac
+  if [[ -n "$update_err" ]]; then
+    printf '%s\n' "$update_err" | tail -5 | sed 's/^/  ⚠ /'
+  fi
+fi
+
+pm_install() {
+  local pkg="$1"
+  LAST_ERR=""
+  [[ "$PRIV_MODE" != "system" || -z "$PM" ]] && return 1
+  case "$PM" in
+    apt)    LAST_ERR=$($SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" 2>&1 >/dev/null) ;;
+    dnf)    LAST_ERR=$($SUDO dnf install -y "$pkg" 2>&1 >/dev/null) ;;
+    yum)    LAST_ERR=$($SUDO yum install -y "$pkg" 2>&1 >/dev/null) ;;
+    zypper) LAST_ERR=$($SUDO zypper --non-interactive install -y "$pkg" 2>&1 >/dev/null) ;;
+    pacman) LAST_ERR=$($SUDO pacman -S --noconfirm "$pkg" 2>&1 >/dev/null) ;;
+    apk)    LAST_ERR=$($SUDO apk add --no-cache "$pkg" 2>&1 >/dev/null) ;;
+  esac
+}
+
+# Resolve "latest" release tag once per repo (cached). Returns empty on failure.
+declare -A _GH_TAG_CACHE=()
+gh_latest_tag() {
+  local repo="$1"
+  if [[ -n "${_GH_TAG_CACHE[$repo]:-}" ]]; then
+    printf '%s' "${_GH_TAG_CACHE[$repo]}"
+    return 0
+  fi
+  command -v curl >/dev/null 2>&1 || return 1
+  local tag
+  tag=$(curl -fsSL --connect-timeout 10 "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
+        | grep -m1 '"tag_name"' | cut -d'"' -f4)
+  [[ -z "$tag" ]] && return 1
+  _GH_TAG_CACHE[$repo]="$tag"
+  printf '%s' "$tag"
+}
+
+# Install a static binary from a GitHub release.
+# Args: repo  asset-pattern  bin-name
+#   {ARCH}     → x86_64 / aarch64
+#   {ARCH_ALT} → amd64  / arm64
+#   {ARCH_NVIM}→ x86_64 / arm64   (neovim, tmux-builds naming)
+#   {VER}      → vX.Y.Z  (tag as-is, resolved via GitHub API)
+#   {VER_NUM}  →  X.Y.Z  (tag with leading v stripped)
+# Optional 4th arg: flag used to smoke-test the binary (default --version; tmux
+# uses -V). A binary that cannot execute here (typically a glibc-too-new build on
+# an old distro) is rejected BEFORE installing, so the caller can try another asset.
+# Uses /usr/local/bin in system mode, ~/.local/bin in user mode.
+gh_install_binary() {
+  local repo="$1" pattern="$2" binname="$3" verify_flag="${4:---version}"
+  [[ -z "$GH_ARCH" ]] && return 1
+  command -v curl >/dev/null 2>&1 || return 1
+
+  local needs_tag="" tag="" ver_num="" url asset
+  case "$pattern" in *'{VER}'*|*'{VER_NUM}'*) needs_tag=1 ;; esac
+  if [[ -n "$needs_tag" ]]; then
+    tag=$(gh_latest_tag "$repo") || return 1
+    ver_num=${tag#v}
+  fi
+
+  asset=$pattern
+  asset=${asset//\{ARCH\}/$GH_ARCH}
+  asset=${asset//\{ARCH_ALT\}/$GH_ARCH_ALT}
+  asset=${asset//\{ARCH_NVIM\}/${GH_ARCH/aarch64/arm64}}
+  asset=${asset//\{VER\}/$tag}
+  asset=${asset//\{VER_NUM\}/$ver_num}
+
+  if [[ -n "$tag" ]]; then
+    url="https://github.com/$repo/releases/download/$tag/$asset"
+  else
+    url="https://github.com/$repo/releases/latest/download/$asset"
+  fi
+
+  install_binary_from_url "$url" "$asset" "$binname" "$verify_flag"
+}
+
+# Download an asset (archive or bare binary) from any URL, find <binname> in it,
+# smoke-test it, and install it. Shared by gh_install_binary and non-GitHub
+# sources (e.g. ncdu from dev.yorhel.nl). Args: url asset binname [verify_flag]
+install_binary_from_url() {
+  local url="$1" asset="$2" binname="$3" verify_flag="${4:---version}"
+  local tmp found
+  tmp=$(mktemp -d) || return 1
+  if ! curl -fsSL --connect-timeout 10 -o "$tmp/$asset" "$url" 2>/dev/null; then
+    rm -rf "$tmp"; return 1
+  fi
+  case "$asset" in
+    *.tar.gz|*.tgz) tar -C "$tmp" -xzf "$tmp/$asset" 2>/dev/null ;;
+    *.tar.xz)       tar -C "$tmp" -xJf "$tmp/$asset" 2>/dev/null ;;
+    *.tar.bz2|*.tbz) tar -C "$tmp" -xjf "$tmp/$asset" 2>/dev/null ;;
+    *.zip)          (cd "$tmp" && command -v unzip >/dev/null && unzip -q "$asset") 2>/dev/null ;;
+  esac
+  found=$(find "$tmp" -type f -name "$binname" -perm -u+x 2>/dev/null | head -1)
+  [[ -z "$found" ]] && found=$(find "$tmp" -type f -name "$binname" 2>/dev/null | head -1)
+  if [[ -z "$found" ]]; then
+    # Bare-binary asset (e.g. jq-linux-amd64): not an archive, so the download
+    # itself is the binary. (No `file` dependency — it is absent on minimal hosts;
+    # the run-check below rejects anything that is not a working executable.)
+    case "$asset" in
+      *.tar.*|*.tgz|*.tbz|*.zip) ;;
+      *) [[ -f "$tmp/$asset" ]] && found="$tmp/$asset" ;;
+    esac
+  fi
+  if [[ -n "$found" ]]; then
+    chmod +x "$found" 2>/dev/null
+    if ! "$found" "$verify_flag" >/dev/null 2>&1; then
+      echo "  ↳ $binname from $asset does not run on this host (old glibc?) — rejected"
+      rm -rf "$tmp"; return 1
+    fi
+    if [[ "$PRIV_MODE" == "system" ]]; then
+      $SUDO install -m 0755 "$found" "$INSTALL_DIR/$binname" 2>/dev/null \
+        && { rm -rf "$tmp"; return 0; }
+    else
+      install -m 0755 "$found" "$INSTALL_DIR/$binname" 2>/dev/null \
+        && { rm -rf "$tmp"; return 0; }
+    fi
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+# Neovim full-tree install from GitHub release.
+# Unlike gh_install_binary (which copies only the binary), neovim ships
+# runtime Lua/VimL files under share/nvim/runtime that MUST be co-located
+# with the binary. The tarball is extracted to a temp dir, smoke-tested, and only
+# then copied into the prefix:
+#   nvim-linux-x86_64/bin/nvim   → /usr/local/bin/nvim  (or ~/.local/bin/nvim)
+#   nvim-linux-x86_64/share/nvim → /usr/local/share/nvim (or ~/.local/share/nvim)
+# Official builds need a recent glibc; on older hosts (CentOS 7 …) they die with
+# "GLIBC_2.xx not found", so neovim/neovim-releases (built against glibc 2.17,
+# same asset names) is tried as a fallback.
+_gh_try_neovim_repo() {
+  local repo="$1" nvim_arch="$2" tag asset url tmp prefix
+  tag=$(gh_latest_tag "$repo") || { echo "  ↳ could not resolve $repo release tag"; return 1; }
+  asset="nvim-linux-${nvim_arch}.tar.gz"
+  url="https://github.com/${repo}/releases/download/${tag}/${asset}"
+  tmp=$(mktemp -d) || return 1
+  echo "  ↳ downloading ${asset} (${repo} ${tag})..."
+  if ! curl -fsSL --connect-timeout 30 -o "$tmp/$asset" "$url" 2>/dev/null; then
+    echo "  ↳ download failed"; rm -rf "$tmp"; return 1
+  fi
+  mkdir -p "$tmp/x"
+  if ! tar -C "$tmp/x" --strip-components=1 -xzf "$tmp/$asset" 2>/dev/null; then
+    echo "  ↳ extraction failed"; rm -rf "$tmp"; return 1
+  fi
+  if ! "$tmp/x/bin/nvim" --version >/dev/null 2>&1; then
+    echo "  ↳ $repo build does not run on this host (old glibc?)"; rm -rf "$tmp"; return 1
+  fi
+  if [[ "$PRIV_MODE" == "system" ]]; then
+    prefix="/usr/local"
+    $SUDO cp -a "$tmp/x/." "$prefix/" 2>/dev/null
+  else
+    prefix="$HOME/.local"
+    mkdir -p "$prefix"
+    cp -a "$tmp/x/." "$prefix/" 2>/dev/null
+  fi
+  local rc=$?
+  rm -rf "$tmp"
+  if [[ $rc -eq 0 ]] && "$prefix/bin/nvim" --version >/dev/null 2>&1; then
+    echo "  ↳ ✓ neovim $("$prefix/bin/nvim" --version 2>/dev/null | head -1) installed to ${prefix}"
+    return 0
+  fi
+  return 1
+}
+
+gh_install_neovim() {
+  local nvim_arch repo
+  case "$(uname -m)" in
+    x86_64|amd64)  nvim_arch="x86_64" ;;
+    aarch64|arm64) nvim_arch="arm64" ;;
+    *) echo "  ↳ unsupported arch for neovim"; return 1 ;;
+  esac
+  command -v curl >/dev/null 2>&1 || return 1
+  for repo in neovim/neovim neovim/neovim-releases; do
+    _gh_try_neovim_repo "$repo" "$nvim_arch" && return 0
+  done
+  return 1
+}
+
+# Remove a package name from FAILED / NEED_PM / INSTALLED once a later step
+# recovered or replaced it. (No namerefs: bash 4.2 on CentOS 7 lacks them.)
+drop_pkg() {
+  local name="$1" x
+  local -a f=("${FAILED[@]:-}") n=("${NEED_PM[@]:-}") i=("${INSTALLED[@]:-}")
+  FAILED=(); NEED_PM=(); INSTALLED=()
+  for x in "${f[@]}"; do [[ -n "$x" && "$x" != "$name" ]] && FAILED+=("$x"); done
+  for x in "${n[@]}"; do [[ -n "$x" && "$x" != "$name" ]] && NEED_PM+=("$x"); done
+  for x in "${i[@]}"; do [[ -n "$x" && "$x" != "$name" ]] && INSTALLED+=("$x"); done
+  return 0
+}
+
+# Node.js from a tarball — distro nodejs is ancient (or absent) on old/no-pm hosts.
+# Tries official nodejs.org first, then unofficial-builds glibc-217 (x64 only) for
+# hosts whose glibc is too old for the official binaries. Verified before install.
+NODE_MAJOR=24
+node_usable() {
+  local major
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || return 1
+  major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null) || return 1
+  [[ "${major:-0}" -ge 18 ]]
+}
+
+_node_try_tarball() {
+  local url="$1" file="$2" tmp prefix rc
+  tmp=$(mktemp -d) || return 1
+  echo "  ↳ downloading $file..."
+  if ! curl -fsSL --connect-timeout 30 -o "$tmp/$file" "$url" 2>/dev/null; then
+    echo "  ↳ download failed"; rm -rf "$tmp"; return 1
+  fi
+  mkdir -p "$tmp/x"
+  if ! tar -C "$tmp/x" --strip-components=1 -xJf "$tmp/$file" 2>/dev/null; then
+    echo "  ↳ extraction failed (xz missing?)"; rm -rf "$tmp"; return 1
+  fi
+  if ! "$tmp/x/bin/node" --version >/dev/null 2>&1; then
+    echo "  ↳ this node build does not run on this host (old glibc?)"; rm -rf "$tmp"; return 1
+  fi
+  rm -f "$tmp/x/CHANGELOG.md" "$tmp/x/LICENSE" "$tmp/x/README.md"
+  if [[ "$PRIV_MODE" == "system" ]]; then
+    prefix="/usr/local"; $SUDO cp -a "$tmp/x/." "$prefix/" 2>/dev/null; rc=$?
+  else
+    prefix="$HOME/.local"; mkdir -p "$prefix"; cp -a "$tmp/x/." "$prefix/" 2>/dev/null; rc=$?
+  fi
+  rm -rf "$tmp"
+  [[ $rc -eq 0 ]] && "$prefix/bin/node" --version >/dev/null 2>&1 \
+    && echo "  ↳ ✓ node $("$prefix/bin/node" --version) installed to ${prefix}"
+}
+
+install_node_tarball() {
+  local narch file ver
+  command -v curl >/dev/null 2>&1 || return 1
+  case "$(uname -m)" in
+    x86_64|amd64)  narch="x64" ;;
+    aarch64|arm64) narch="arm64" ;;
+    *) return 1 ;;
+  esac
+  file=$(curl -fsSL --connect-timeout 10 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" 2>/dev/null \
+         | awk -v s="-linux-${narch}.tar.xz" 'index($2, s) { print $2; exit }')
+  if [[ -n "$file" ]] && _node_try_tarball "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/$file" "$file"; then
+    return 0
+  fi
+  # Old-glibc hosts: unofficial glibc-217 builds (x64 only). Walk the newest
+  # versions of NODE_MAJOR until one actually ships that asset.
+  if [[ "$narch" == "x64" ]]; then
+    local base="https://unofficial-builds.nodejs.org/download/release" tries=0
+    for ver in $(curl -fsSL --connect-timeout 10 "$base/" 2>/dev/null \
+                 | grep -oE "v${NODE_MAJOR}\.[0-9]+\.[0-9]+" | sort -uVr); do
+      file="node-${ver}-linux-x64-glibc-217.tar.xz"
+      curl -fsIL --connect-timeout 10 "$base/${ver}/${file}" >/dev/null 2>&1 || {
+        tries=$((tries+1)); [[ $tries -ge 5 ]] && break; continue; }
+      _node_try_tarball "$base/${ver}/${file}" "$file" && return 0
+      break
+    done
+  fi
+  return 1
+}
+
+# Fallback table. Tools listed here can be installed without the package
+# manager. Tools NOT listed will be reported as NEED_PM in user mode.
+try_fallback() {
+  local pkg="$1"
+  case "$pkg" in
+    # eza/bat: musl (static) first so they run on old-glibc hosts; gnu as fallback
+    eza)        gh_install_binary "eza-community/eza"        "eza_{ARCH}-unknown-linux-musl.tar.gz"                 "eza" \
+                  || gh_install_binary "eza-community/eza"   "eza_{ARCH}-unknown-linux-gnu.tar.gz"                  "eza" ;;
+    zoxide)     gh_install_binary "ajeetdsouza/zoxide"       "zoxide-{VER_NUM}-{ARCH}-unknown-linux-musl.tar.gz"    "zoxide" ;;
+    fzf)        gh_install_binary "junegunn/fzf"             "fzf-{VER_NUM}-linux_{ARCH_ALT}.tar.gz"                "fzf" ;;
+    ripgrep)    gh_install_binary "BurntSushi/ripgrep"       "ripgrep-{VER_NUM}-{ARCH}-unknown-linux-musl.tar.gz"   "rg" ;;
+    fd-find)    gh_install_binary "sharkdp/fd"               "fd-{VER}-{ARCH}-unknown-linux-musl.tar.gz"            "fd" ;;
+    bat)        gh_install_binary "sharkdp/bat"              "bat-{VER}-{ARCH}-unknown-linux-musl.tar.gz"           "bat" \
+                  || gh_install_binary "sharkdp/bat"         "bat-{VER}-{ARCH}-unknown-linux-gnu.tar.gz"            "bat" ;;
+    # tmux: static builds (distro tmux is 1.8 on CentOS 7; absent on no-pm hosts)
+    tmux)       gh_install_binary "tmux/tmux-builds"         "tmux-{VER_NUM}-linux-{ARCH_NVIM}.tar.gz"              "tmux" "-V" ;;
+    btop)       gh_install_binary "aristocratos/btop"        "btop-{ARCH}-unknown-linux-musl.tar.gz"                "btop" ;;
+    # ncdu: not on GitHub — static (Zig/musl) builds from the author's site. Latest
+    # version is scraped from the project page (x86_64 / aarch64 only).
+    ncdu)       _ncdu_asset=$(curl -fsSL --connect-timeout 10 "https://dev.yorhel.nl/ncdu" 2>/dev/null \
+                  | grep -oE "ncdu-[0-9.]+-linux-${GH_ARCH}\.tar\.gz" | sort -uV | tail -1)
+                [[ -n "$_ncdu_asset" ]] \
+                  && install_binary_from_url "https://dev.yorhel.nl/download/$_ncdu_asset" "$_ncdu_asset" "ncdu" ;;
+    jq)         gh_install_binary "jqlang/jq"                "jq-linux-{ARCH_ALT}"                                  "jq" ;;
+    shellcheck) gh_install_binary "koalaman/shellcheck"      "shellcheck-{VER}.linux.{ARCH}.tar.xz"                 "shellcheck" ;;
+    starship)   gh_install_binary "starship/starship"        "starship-{ARCH}-unknown-linux-musl.tar.gz"            "starship" ;;
+    # chezmoi: the plain linux tarball is now glibc-linked (needs >= 2.34); the musl one is static
+    chezmoi)    gh_install_binary "twpayne/chezmoi"           "chezmoi_{VER_NUM}_linux-musl_{ARCH_ALT}.tar.gz"       "chezmoi" \
+                  || gh_install_binary "twpayne/chezmoi"      "chezmoi_{VER_NUM}_linux_{ARCH_ALT}.tar.gz"            "chezmoi" ;;
+    # neovim uses 'x86_64'/'arm64' in asset names (not 'aarch64')
+    neovim)
+      local _na; case "$(uname -m)" in x86_64|amd64) _na=x86_64 ;; aarch64|arm64) _na=arm64 ;; *) return 1 ;; esac
+      gh_install_binary "neovim/neovim" "nvim-linux-${_na}.tar.gz" "nvim" ;;
+    # ── Optional packages (selected via setup.sh interactive picker) ─────
+    gh)         gh_install_binary "cli/cli"                   "gh_{VER_NUM}_linux_{ARCH_ALT}.tar.gz"                 "gh" ;;
+    lazygit)    gh_install_binary "jesseduffield/lazygit"     "lazygit_{VER_NUM}_Linux_{ARCH}.tar.gz"                "lazygit" ;;
+    dust)       gh_install_binary "bootandy/dust"             "dust-{VER}-{ARCH}-unknown-linux-musl.tar.gz"          "dust" ;;
+    procs)      gh_install_binary "dalance/procs"             "procs-{VER}-{ARCH}-linux.tar.gz"                      "procs" ;;
+    tldr)       gh_install_binary "tealdeer-rs/tealdeer"      "tealdeer-linux-{ARCH}-musl"                           "tldr" ;;
+    *)          return 1 ;;
+  esac
+}
+
+# True when an installed binary cannot start on this host (dynamic-linker failure,
+# typically a glibc-too-new build left by an earlier bootstrap). Such a binary
+# must not count as "already present". Tools without --version just print usage
+# (no linker message), so they are never misclassified.
+binary_broken() {
+  local out
+  out=$("$1" --version 2>&1 </dev/null | head -3)
+  printf '%s' "$out" | grep -qE 'GLIBC_[0-9.]+|error while loading shared libraries|cannot execute binary'
+}
+
+check_and_install() {
+  local pkg="$1"
+  local bin="${2:-$pkg}"
+  local alt="${3:-}"   # alternate binary name (e.g. fd for fd-find, installed by the GitHub fallback)
+  local have
+  have=$(command -v "$bin" 2>/dev/null || { [[ -n "$alt" ]] && command -v "$alt" 2>/dev/null; } || true)
+  if [[ -n "$have" ]]; then
+    if binary_broken "$have"; then
+      echo "$pkg present at $have but cannot run (old glibc?) — reinstalling"
+    else
+      ALREADY+=("$pkg")
+      return 0
+    fi
+  fi
+
+  if [[ "$PRIV_MODE" == "system" ]]; then
+    echo "Installing $pkg..."
+    if pm_install "$pkg"; then
+      INSTALLED+=("$pkg")
+      return 0
+    fi
+    if try_fallback "$pkg"; then
+      RECOVERED+=("$pkg")
+      return 0
+    fi
+    FAILED+=("$pkg")
+    if [[ -n "$LAST_ERR" ]]; then
+      local hint
+      hint=$(printf '%s\n' "$LAST_ERR" | grep -E '^(E:|Error|error:)' | head -1)
+      [[ -z "$hint" ]] && hint=$(printf '%s\n' "$LAST_ERR" | tail -1)
+      echo "  ↳ $hint"
+    fi
+    return 1
+  fi
+
+  # User mode — go straight to GitHub fallback.
+  echo "Installing $pkg (user-local)..."
+  if try_fallback "$pkg"; then
+    RECOVERED+=("$pkg")
+    return 0
+  fi
+  # Not in fallback table → only the package manager can supply it.
+  NEED_PM+=("$pkg")
+  echo "  ↳ skipped: $pkg needs a system package manager (no static-binary fallback available)"
+  return 1
+}
+
+# ── Tool list ────────────────────────────────────────────────────────────────
+# CRITICAL — chezmoi apply itself + modify_ scripts depend on these.
+# chezmoi is installed here so the binary persists in PATH after a one-shot
+# `sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply <repo>` bootstrap
+# (get.chezmoi.io drops chezmoi into a temp dir that does not survive).
+check_and_install git
+check_and_install curl
+check_and_install jq
+# ca-certificates: required-but-soft-fail. Attempted via the package manager
+# like any other required package. On a system WITH a package manager this is a
+# genuine TLS trust-store dependency, so a pm failure lands it in FAILED[] and
+# is surfaced as a ⚠ attention item by the summary script. When there is NO
+# package manager (no-pm / user mode) it cannot be installed here; the summary
+# script demotes it to an informational note rather than a ⚠ failure.
+check_and_install ca-certificates update-ca-certificates update-ca-trust   # Debian / RHEL tool names
+check_and_install chezmoi
+
+# Core shell + tooling.
+check_and_install zsh
+# zinit and the plugin stack need zsh >= 5.3 (CentOS/Oracle Linux 7 ship 5.0.2). On such
+# hosts — or when no zsh could be installed at all — install romkatv/zsh-bin (static,
+# hermetic zsh 5.8) into ~/.local, no root needed. The login shell is left alone;
+# ~/.zshrc execs into it only if it runs (see the hand-off at the top of .zshrc).
+zsh_new_enough() {
+  local v
+  v=$("$1" --version 2>/dev/null | awk '{print $2}')
+  case "$v" in [6-9].*|5.[3-9]|5.[3-9].*|5.[1-9][0-9]|5.[1-9][0-9].*) return 0 ;; *) return 1 ;; esac
+}
+install_static_zsh() {
+  local z="$HOME/.local/bin/zsh" tmp
+  if command -v zsh >/dev/null 2>&1 && zsh_new_enough "$(command -v zsh)"; then return 0; fi
+  if [[ -x "$z" ]] && zsh_new_enough "$z"; then ALREADY+=("zsh-static"); return 0; fi
+  command -v curl >/dev/null 2>&1 || return 1
+  tmp=$(mktemp -d) || return 1
+  echo "Installing static zsh 5.8 (system zsh missing or < 5.3)..."
+  if curl -fsSL --connect-timeout 20 -o "$tmp/install" https://raw.githubusercontent.com/romkatv/zsh-bin/master/install \
+     && sh "$tmp/install" -q -d "$HOME/.local" -e no >/dev/null 2>&1 && zsh_new_enough "$z"; then
+    RECOVERED+=("zsh-static"); echo "  ↳ ✓ $("$z" --version | cut -d' ' -f1-2) installed to $HOME/.local"
+    # No system zsh at all → let the default-shell step below find this one.
+    command -v zsh >/dev/null 2>&1 || PATH="$HOME/.local/bin:$PATH"
+  else
+    echo "  ↳ static zsh install failed (non-fatal: the system zsh keeps working without plugins)"
+  fi
+  rm -rf "$tmp"
+}
+install_static_zsh
+# fzf: apt ships old versions (< 0.48) that lack `--zsh` support which is
+# required for fzf key-bindings integration in .zshrc.  Always ensure we have
+# a version with --zsh; upgrade from GitHub if the current binary is too old.
+_fzf_ok=0
+if command -v fzf >/dev/null 2>&1 && fzf --zsh >/dev/null 2>&1; then
+  _fzf_ok=1; ALREADY+=("fzf")
+fi
+if [[ $_fzf_ok -eq 0 ]]; then
+  echo "Installing fzf from GitHub (need --zsh flag support)..."
+  if try_fallback fzf; then
+    RECOVERED+=("fzf")
+  else
+    # Last resort: fall through to the package manager.
+    check_and_install fzf
+  fi
+fi
+unset _fzf_ok
+check_and_install ripgrep rg
+check_and_install fd-find fdfind fd
+check_and_install eza
+check_and_install bat batcat bat
+check_and_install wget
+check_and_install zoxide
+check_and_install shellcheck
+check_and_install starship
+# Neovim: apt ships ancient versions (0.9.x on Ubuntu 24.04); always install
+# from GitHub to get the latest stable (>= 0.10.0 required by nvim config).
+_nvim_ok=0
+if command -v nvim >/dev/null 2>&1; then
+  _nvim_ver=$(nvim --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  _nvim_major="${_nvim_ver%%.*}"
+  _nvim_minor="${_nvim_ver##*.}"
+  if [[ "${_nvim_major:-0}" -gt 0 || "${_nvim_minor:-0}" -ge 10 ]]; then
+    _nvim_ok=1; ALREADY+=("neovim")
+  else
+    echo "Upgrading neovim: installed ${_nvim_ver:-unknown} is too old (need >= 0.10.0)"
+  fi
+fi
+if [[ $_nvim_ok -eq 0 ]]; then
+  echo "Installing neovim from GitHub (apt version is outdated)..."
+  if gh_install_neovim; then
+    RECOVERED+=("neovim")
+  else
+    FAILED+=("neovim"); echo "  ↳ failed to install neovim from GitHub"
+  fi
+fi
+unset _nvim_ok _nvim_ver _nvim_major _nvim_minor
+# The following are intentionally NOT auto-installed on Linux — they are
+# surfaced as optional extras in run_after_99-bootstrap-summary.sh with
+# per-distro install hints, so a missing package is an informational note
+# rather than a failure that needs attention:
+#   btop  — interactive resource monitor   (opt in: see OPTIONAL_LIST below)
+#   ncdu  — disk usage analyzer             (opt in: see OPTIONAL_LIST below)
+#   xclip — X11 clipboard integration
+#   tree  — recursive directory listing
+check_and_install tmux
+# The tmux config needs tmux >= 3; distro packages (CentOS 7: 1.8) are too old.
+if command -v tmux >/dev/null 2>&1; then
+  _tmux_major=$(tmux -V 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  if [[ "${_tmux_major:-0}" -lt 3 ]]; then
+    echo "Upgrading tmux: installed ${_tmux_major:-unknown}.x is too old (need >= 3)"
+    try_fallback tmux && { drop_pkg tmux; RECOVERED+=("tmux"); }
+  fi
+  unset _tmux_major
+fi
+check_and_install poppler-utils pdftotext
+# command-not-found: Debian/Ubuntu-only package that provides the
+# /etc/zsh_command_not_found handler (shows `apt install <pkg>` hints for
+# unknown commands).  Sourced by OMZP::command-not-found via zinit.
+if [[ "$PM" == "apt" ]] && [[ ! -f "/etc/zsh_command_not_found" ]]; then
+  echo "Installing command-not-found..."
+  pm_install "command-not-found" && INSTALLED+=("command-not-found") \
+    || echo "  ↳ skipped (non-fatal)"
+fi
+
+# Node.js + npm — required by run_once_30-install-devtools.sh for `npm install -g`
+# of aicommit2, claude-code, etc. Install both: on Debian/Ubuntu the nodejs
+# package does not always pull in npm.
+check_and_install nodejs node
+check_and_install npm
+# Distro node is missing, ancient (CentOS 7: 6.x) or unusable on old glibc.
+if ! node_usable; then
+  echo "Installing Node.js ${NODE_MAJOR}.x from tarball (distro node missing/too old)..."
+  if install_node_tarball; then
+    RECOVERED+=("nodejs"); drop_pkg nodejs; drop_pkg npm
+  else
+    drop_pkg nodejs; FAILED+=("nodejs"); echo "  ↳ ✗ could not install a usable Node.js (>= 18)"
+  fi
+fi
+
+# ── Optional packages (selected via setup.sh interactive picker) ────────────
+# The list is written by setup.sh into
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap/optional-packages.list
+# Each non-blank, non-comment line is: <pkgname> [binname]
+OPTIONAL_LIST="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap/optional-packages.list"
+if [[ -f "$OPTIONAL_LIST" ]]; then
+  opt_count=0
+  while IFS= read -r opt_line || [[ -n "$opt_line" ]]; do
+    opt_line="${opt_line%%#*}"                       # strip inline comments
+    opt_line="${opt_line#"${opt_line%%[![:space:]]*}"}"  # ltrim
+    opt_line="${opt_line%"${opt_line##*[![:space:]]}"}"  # rtrim
+    [[ -z "$opt_line" ]] && continue
+    # shellcheck disable=SC2086
+    set -- $opt_line
+    opt_name="$1"; opt_bin="${2:-$1}"
+    opt_count=$((opt_count + 1))
+    check_and_install "$opt_name" "$opt_bin"
+  done < "$OPTIONAL_LIST"
+  if (( opt_count > 0 )); then
+    echo "ℹ Processed $opt_count optional package(s) from $OPTIONAL_LIST"
+  fi
+fi
+
+# ── Default shell (zsh) ─────────────────────────────────────────────────────
+# Best-effort: only attempt when we have a real zsh and the current user's
+# login shell isn't already zsh. In the non-TTY curl-pipe bootstrap path we
+# can still change the shell via `sudo chsh -s <zsh> <user>` (no password
+# prompt when we already have system-mode privilege). If chsh ultimately
+# fails (PAM, locked account, busybox stub, …), drop a guarded `exec zsh -l`
+# into ~/.bash_profile so the next interactive bash login still hands off.
+install_zsh_handoff_in_bash_profile() {
+  local zsh_bin="$1"
+  local profile="$HOME/.bash_profile"
+  local begin='# >>> chezmoi-zsh-handoff (managed) >>>'
+  local end='# <<< chezmoi-zsh-handoff (managed) <<<'
+  # Idempotent: strip any previous block, then re-append.
+  if [[ -f "$profile" ]] && grep -qF "$begin" "$profile"; then
+    sed -i.bak "/$begin/,/$end/d" "$profile" 2>/dev/null || true
+    rm -f "${profile}.bak"
+  fi
+  {
+    printf '\n%s\n' "$begin"
+    echo "# Bootstrap-managed: enter zsh for interactive login shells when chsh"
+    echo "# didn't change the login shell (e.g. root on Ubuntu, PAM restrictions)."
+    echo 'if [ -z "${ZSH_VERSION:-}" ] && [ -t 1 ] && [ -x '"\"$zsh_bin\""' ]; then'
+    echo "  exec \"$zsh_bin\" -l"
+    echo "fi"
+    printf '%s\n' "$end"
+  } >> "$profile"
+  echo "  ↳ wrote zsh-handoff block to $profile"
+}
+
+verify_login_shell_is_zsh() {
+  local user="$1" zsh_bin="$2" actual
+  actual="$(getent passwd "$user" 2>/dev/null | cut -d: -f7)"
+  [[ "$actual" == "$zsh_bin" || "$(basename "${actual:-}")" == "zsh" ]]
+}
+
+set_default_shell_zsh() {
+  command -v zsh >/dev/null 2>&1 || return 0
+  local zsh_bin current user chsh_ok=0
+  zsh_bin="$(command -v zsh)"
+  user="$(id -un)"
+  current="$(getent passwd "$user" 2>/dev/null | cut -d: -f7)"
+  [[ -z "$current" ]] && current="${SHELL:-}"
+  [[ "$(basename "${current:-}")" == "zsh" ]] && return 0
+  command -v chsh >/dev/null 2>&1 || {
+    echo "ℹ chsh not available — installing zsh-handoff in ~/.bash_profile instead"
+    install_zsh_handoff_in_bash_profile "$zsh_bin"
+    return 0
+  }
+  # Ensure zsh is registered in /etc/shells (system mode only — needs root).
+  if [[ "$PRIV_MODE" == "system" ]] && ! grep -qxF "$zsh_bin" /etc/shells 2>/dev/null; then
+    echo "$zsh_bin" | $SUDO tee -a /etc/shells >/dev/null 2>&1 || true
+  fi
+  # Linux chsh is PAM-wrapped: a bare `chsh -s` can block reading a password
+  # from stdin (Debian/Ubuntu/Raspberry Pi), even with a TTY — and since the
+  # command never exits, the trailing `|| true` cannot save it. So:
+  #  - In SYSTEM mode, always use the passwordless sudo path (sudo chsh -s zsh $USER,
+  #    or sudo usermod -s zsh $USER as a fallback) — never a bare chsh.
+  #  - In USER mode (no privilege) there is no safe non-interactive path, so
+  #    drop the bash-profile handoff instead of risking a hang.
+  if [[ "$PRIV_MODE" == "system" ]]; then
+    echo "[INFO] Setting default shell to zsh for $user via $SUDO chsh..."
+    if $SUDO chsh -s "$zsh_bin" "$user" >/dev/null 2>&1; then
+      chsh_ok=1
+    elif command -v usermod >/dev/null 2>&1 \
+         && $SUDO usermod -s "$zsh_bin" "$user" >/dev/null 2>&1; then
+      # chsh sometimes refuses (e.g. PAM `chsh` allow-list, or odd builds);
+      # usermod writes /etc/passwd directly with the same effect.
+      chsh_ok=1
+    fi
+  else
+    # No privilege: cannot change login shell non-interactively; don't risk a
+    # blocking prompt — go straight to the bash-profile handoff.
+    install_zsh_handoff_in_bash_profile "$zsh_bin"
+    return 0
+  fi
+  # Verify the kernel actually updated /etc/passwd. chsh can exit 0 yet leave
+  # the entry untouched on some PAM stacks; verify by re-reading passwd.
+  if (( chsh_ok == 1 )) && verify_login_shell_is_zsh "$user" "$zsh_bin"; then
+    echo "  ↳ ✓ default shell is now $zsh_bin (open a new login shell to pick it up)"
+    return 0
+  fi
+  echo "  ↳ ✗ chsh did not take effect — installing zsh-handoff in ~/.bash_profile"
+  install_zsh_handoff_in_bash_profile "$zsh_bin"
+  echo "    (you can still try manually:  chsh -s $zsh_bin)"
+}
+set_default_shell_zsh
+
+# ── Zinit (zsh plugin manager) ─────────────────────────────────────────────
+# Must exist before the first interactive zsh session so vi-mode, fzf-tab, and
+# completion plugins load on login.  .zshrc also auto-installs zinit if missing,
+# so this is belt-and-suspenders for the bootstrap path.
+_zinit_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
+if [[ ! -r "$_zinit_dir/zinit.zsh" ]]; then
+  echo "Installing zinit (zsh plugin manager)..."
+  if command -v git >/dev/null 2>&1; then
+    git clone --depth=1 https://github.com/zdharma-continuum/zinit.git "$_zinit_dir" 2>/dev/null \
+      && { RECOVERED+=("zinit"); echo "  ↳ ✓ zinit installed"; } \
+      || { FAILED+=("zinit"); echo "  ↳ ✗ zinit clone failed — vi-mode/completions won't load"; }
+  else
+    echo "  ↳ git not found — skipping zinit"
+  fi
+fi
+unset _zinit_dir
+
+# ── Go toolchain (system install to /usr/local/go) ──────────────────────────
+# Installs the official Go tarball to /usr/local/go so /usr/local/go/bin/go is
+# on PATH (already wired into .zshrc via append_path_if_dir). Idempotent: skips
+# when /usr/local/go/bin/go already reports GO_VERSION. System-mode only — needs
+# root to remove/recreate /usr/local/go. The user-mode PATH has no equivalent.
+GO_VERSION="1.26.4"
+GO_TARBALL="go${GO_VERSION}.linux-${GH_ARCH_ALT}.tar.gz"
+GO_URL="https://go.dev/dl/${GO_TARBALL}"
+GO_INSTALL_BIN="/usr/local/go/bin/go"
+if [[ "$PRIV_MODE" != "system" ]]; then
+  : # user mode: no /usr/local write access — skip silently
+elif [[ -x "$GO_INSTALL_BIN" ]] \
+  && "$GO_INSTALL_BIN" version 2>/dev/null | grep -q "go${GO_VERSION} "; then
+  ALREADY+=("go")
+else
+  echo "Installing Go ${GO_VERSION} to /usr/local/go..."
+  _go_tmp="$(mktemp -d)" || _go_tmp=""
+  if [[ -z "$_go_tmp" ]]; then
+    FAILED+=("go"); echo "  ↳ ✗ mktemp failed"
+  elif ! curl -fsSL --connect-timeout 30 -o "$_go_tmp/$GO_TARBALL" "$GO_URL" 2>/dev/null; then
+    FAILED+=("go"); echo "  ↳ ✗ download failed: $GO_URL"
+  else
+    $SUDO rm -rf /usr/local/go
+    if $SUDO tar -C /usr/local -xzf "$_go_tmp/$GO_TARBALL" 2>/dev/null \
+      && [[ -x "$GO_INSTALL_BIN" ]]; then
+      RECOVERED+=("go"); echo "  ↳ ✓ go $("$GO_INSTALL_BIN" version 2>/dev/null)"
+    else
+      FAILED+=("go"); echo "  ↳ ✗ extraction failed"
+    fi
+  fi
+  [[ -n "$_go_tmp" ]] && rm -rf "$_go_tmp"
+  unset _go_tmp
+fi
+unset GO_VERSION GO_TARBALL GO_URL GO_INSTALL_BIN
+
+# ── Persist results for the bootstrap summary script ────────────────────────
+if [[ "$PRIV_MODE" == "system" ]]; then
+  if [[ -z "$PM" ]]; then
+    STATUS="no-pm"
+  else
+    STATUS="ok"
+  fi
+else
+  STATUS="ok-user-local"
+fi
+
+{
+  echo "STATUS=$STATUS"
+  echo "MODE=$PRIV_MODE"
+  echo "TIMESTAMP=$(date -u +%FT%TZ 2>/dev/null || date)"
+  echo "PM=$PM"
+  echo "INSTALL_DIR=$INSTALL_DIR"
+  echo "ALREADY=${ALREADY[*]:-}"
+  echo "INSTALLED=${INSTALLED[*]:-}"
+  echo "RECOVERED=${RECOVERED[*]:-}"
+  echo "FAILED=${FAILED[*]:-}"
+  echo "NEED_PM=${NEED_PM[*]:-}"
+} > "$STATE_FILE"
+
+echo ""
+echo "===== Package Install Summary ====="
+echo "Mode: $PRIV_MODE  (target: $INSTALL_DIR)"
+echo "Already present (${#ALREADY[@]}): ${ALREADY[*]:-—}"
+[[ ${#INSTALLED[@]} -gt 0 ]] && echo "Installed via ${PM:-pm} (${#INSTALLED[@]}): ${INSTALLED[*]}"
+[[ ${#RECOVERED[@]} -gt 0 ]] && echo "Installed via GitHub fallback (${#RECOVERED[@]}): ${RECOVERED[*]}"
+[[ ${#NEED_PM[@]}   -gt 0 ]] && echo "Skipped (need pkg manager) (${#NEED_PM[@]}): ${NEED_PM[*]}"
+[[ ${#FAILED[@]}    -gt 0 ]] && echo "Failed (${#FAILED[@]}): ${FAILED[*]}"
+echo "==================================="
+{{- end -}}
