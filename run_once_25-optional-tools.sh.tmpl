@@ -36,6 +36,18 @@ CATALOG=(
   "voicestudio|VoiceStudio|Local voice cloning/dubbing/dictation studio, ElevenLabs alternative (macOS only)"
 )
 
+# macOS-only tools exist nowhere else, so they are neither offered nor accepted as keys on
+# other OSes (the install_* functions below still guard themselves for stale saved selections).
+MACOS_ONLY=" antigravity cleanshot voicestudio "
+if [ "$(uname -s)" != "Darwin" ]; then
+  _all=("${CATALOG[@]}")
+  CATALOG=()
+  for _e in "${_all[@]}"; do
+    case "$MACOS_ONLY" in *" ${_e%%|*} "*) ;; *) CATALOG+=("$_e") ;; esac
+  done
+  unset _all _e
+fi
+
 # VSCode extensions (was the old Brewfile block) — installed via `code --install-extension`.
 VSCODE_EXTENSIONS=(
   "alexcvzz.vscode-sqlite"
@@ -126,7 +138,14 @@ install_codex() {
 install_herdr() {
   case "$(uname -s)" in
     Darwin) have herdr || brew install herdr ;;
-    Linux)  have herdr || log_warn "herdr on Linux: install from herdr.dev (brew not available)" ;;
+    Linux)
+      have herdr && return 0
+      if have curl; then
+        curl -fsSL https://herdr.dev/install.sh | sh || log_warn "herdr install failed"
+      else
+        log_warn "curl missing — cannot install herdr"
+      fi
+      ;;
   esac
 }
 
