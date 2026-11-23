@@ -4,13 +4,16 @@ Manage ~/.opencommit (opencommit / `oco` global config): every setting EXCEPT th
 Having this file is what stops `oco` from running its first-run setup wizard on a new machine.
 Enter the key (and the endpoint, if you use a custom one) in ~/.zsh_secrets as
 `export OCO_API_KEY=...` / `export OCO_API_URL=...`; environment variables override this file.
-OCO_API_URL is preserved from the existing file if one is already there; OCO_API_KEY is never
-written here (any such line oco itself adds is dropped on the next apply).
+OCO_API_URL and OCO_API_KEY are preserved from the existing file if oco (or you) put them there,
+so a key typed into oco's own prompt survives `chezmoi apply`; this repo never contains a value.
 */ -}}
 {{- $url := regexFind "(?m)^OCO_API_URL=[^\r\n]*" .chezmoi.stdin -}}
+{{- $key := regexFind "(?m)^OCO_API_KEY=[^\r\n]+" .chezmoi.stdin -}}
 OCO_TOKENS_MAX_INPUT=32768
 OCO_MODEL=claude-haiku-5-5
 {{ if $url }}{{ $url }}
+{{ end -}}
+{{ if $key }}{{ $key }}
 {{ end -}}
 OCO_PROXY=undefined
 OCO_API_CUSTOM_HEADERS=undefined

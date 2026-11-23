@@ -19,7 +19,11 @@ export CODEX_APIKEY="${CODEX_APIKEY:-$_LOCAL_AI_TOKEN}"
 # Configured entirely via env vars (oco reads OCO_* env before ~/.opencommit), so keys stay
 # in ~/.zsh_secrets and never land in plaintext config. Set OCO_API_URL (your endpoint,
 # e.g. https://<gateway>/v1) in ~/.zsh_secrets; the key defaults to the local-gateway token.
-export OCO_API_KEY="${OCO_API_KEY:-$_LOCAL_AI_TOKEN}"
+# An EMPTY exported OCO_API_KEY would override the key stored in ~/.opencommit, so only export it
+# when there is a value (and drop an empty one).
+if [[ -z "${OCO_API_KEY:-}" ]]; then
+    if [[ -n "${_LOCAL_AI_TOKEN:-}" ]]; then export OCO_API_KEY="$_LOCAL_AI_TOKEN"; else unset OCO_API_KEY; fi
+fi
 export OCO_AI_PROVIDER="${OCO_AI_PROVIDER:-openai}"
 export OCO_MODEL="${OCO_MODEL:-claude-haiku-5-5}"
 export OCO_OMIT_SCOPE="${OCO_OMIT_SCOPE:-true}"   # "feat: x", not "feat(scope): x"
