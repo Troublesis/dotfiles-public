@@ -2,11 +2,11 @@
 # SECRETS LOADER — PowerShell port of ~/.zshrc's `source ~/.zsh_secrets`
 # ============================================================
 #
-# chezmoi age-decrypts encrypted_private_dot_zsh_secrets.tmpl.age to
-# ~/.zsh_secrets on every host (when the age key is present), so the SAME
-# file already holds the AI launcher credentials (_LOCAL_AI_*, _ZAI_*, etc.)
-# used by ai.zsh on macOS/Linux. This loader parses that shell-syntax file
-# into PowerShell process env vars so ai.ps1 can read them.
+# ~/.zsh_secrets (shell syntax: export NAME="value") holds the AI launcher
+# credentials (_LOCAL_AI_*, _ZAI_*, OCO_*, etc.) used by ai.zsh on macOS/Linux.
+# chezmoi creates it once as an empty template; you fill in the values by hand.
+# This loader parses that file into PowerShell process env vars so ai.ps1 and
+# oco.ps1 can read them.
 #
 # Dot-source from the PowerShell profile BEFORE ai.ps1:
 #   . "$HOME\.config\powershell\secrets.ps1"

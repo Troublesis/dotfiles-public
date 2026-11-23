@@ -5,7 +5,7 @@
 # --- PATH: chezmoi/local bins ------------------------------------------------
 export PATH="$HOME/.local/bin:$PATH"
 
-# --- Secrets (same age-decrypted file zsh uses; shell syntax) -----------------
+# --- Secrets (same ~/.zsh_secrets zsh uses; shell syntax) ---------------------
 [ -f ~/.zsh_secrets ] && . ~/.zsh_secrets
 
 # --- chezmoi -----------------------------------------------------------------
@@ -43,6 +43,13 @@ alias r='source ~/.bashrc'
 # Each runs in a subshell so provider env vars don't leak into the session.
 export CODEX_APIKEY="${CODEX_APIKEY:-$_LOCAL_AI_TOKEN}"
 export CLAUDE_CODE_NO_FLICKER=1
+
+# opencommit (oco) — mirrors ai.zsh. Set OCO_API_URL (and optionally OCO_API_KEY) in ~/.zsh_secrets.
+export OCO_API_KEY="${OCO_API_KEY:-$_LOCAL_AI_TOKEN}"
+export OCO_AI_PROVIDER="${OCO_AI_PROVIDER:-openai}"
+export OCO_MODEL="${OCO_MODEL:-claude-haiku-5-5}"
+export OCO_OMIT_SCOPE="${OCO_OMIT_SCOPE:-true}"
+export OCO_GITPUSH="${OCO_GITPUSH:-false}"
 
 _ai_run() {  # _ai_run HAIKU SONNET OPUS URL TOKEN [claude args...]
   local h=$1 s=$2 o=$3 url=$4 tok=$5; shift 5

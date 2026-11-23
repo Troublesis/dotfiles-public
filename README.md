@@ -145,6 +145,19 @@ source when present.
 
 Mark a deliberate exception on a line with `gate:allow`.
 
+## AI launchers, opencommit and secrets
+
+- **Aliases/functions** (zsh `ai.zsh`, Git Bash `~/.bashrc`, PowerShell `ai.ps1`): `cc`, `zai`,
+  `glm`, `gpt`, `grok`, `cg`, `ds`, `rx`. They read their endpoints and tokens from `~/.zsh_secrets`.
+- **opencommit** (`oco`) is installed by default (npm global) and configured purely through
+  `OCO_*` environment variables (`ai.zsh` / `.bashrc` / `oco.ps1`), with commits that omit the
+  scope and never auto-push. Only the endpoint and key are yours to supply.
+- **`~/.zsh_secrets`** is created **once** as a commented, empty template
+  (`create_private_dot_zsh_secrets`; chezmoi never overwrites it afterwards). Fill in real
+  values by hand on each machine, e.g. `export _LOCAL_AI_TOKEN="…"`, `export OCO_API_URL="https://…/v1"`.
+  Edit it with the `es` alias. No value is ever stored in this repo; the gate also blocks any
+  `zsh_secrets`-named file or key material from being committed.
+
 ## Safety defaults
 
 `autoCommit` and `autoPush` are **off** in the generated chezmoi config, so `chezmoi add`

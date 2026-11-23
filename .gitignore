@@ -3,3 +3,6 @@
 # Local-only
 .DS_Store
 *.bak
+
+# placeholder template (no values) — the global ignore has *secrets*
+!create_private_dot_zsh_secrets
