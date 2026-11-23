@@ -4,6 +4,7 @@ LICENSE
 tools/
 setup.sh
 setup.ps1
+bootstrap.sh
 
 # yadm-specific (keep yadm working during transition)
 .config/yadm/
