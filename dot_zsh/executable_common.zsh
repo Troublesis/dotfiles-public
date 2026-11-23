@@ -60,14 +60,29 @@ alias egrep='egrep --color=auto'
 # ============================================================
 
 _edit() {
-  local file="$1"
-  # `chezmoi managed <unmanaged-path>` exits 0 with no output, so test source-path
-  # (non-zero + "not managed" when the target has no source — e.g. a half-applied host).
-  if command -v chezmoi &>/dev/null && [[ -n "$(chezmoi source-path "$file" 2>/dev/null)" ]]; then
-    chezmoi edit --apply "$file" || vi "$file"
-  else
-    vi "$file"
+  local file="$1" src
+  local ov="${DOTFILES_OVERLAY_DIR:-$HOME/.local/share/dotfiles-private}"
+  local ovstate="${XDG_STATE_HOME:-$HOME/.local/state}/chezmoi-overlay/chezmoistate.boltdb"
+  if command -v chezmoi &>/dev/null; then
+    # The private overlay (if any) owns secrets/personal files — try it first.
+    if [[ -d "$ov/.git" ]]; then
+      src="$(chezmoi source-path --source "$ov" --persistent-state "$ovstate" "$file" 2>/dev/null)"
+      if [[ -n "$src" ]]; then
+        chezmoi edit --apply --source "$ov" --persistent-state "$ovstate" "$file" || vi "$file"
+        return
+      fi
+    fi
+    # `chezmoi managed <unmanaged-path>` exits 0 with no output, so test source-path
+    # (non-zero + "not managed" when the target has no source — e.g. a half-applied host).
+    # create_ files are first-run placeholders (e.g. ~/.zsh_secrets): edit the deployed file,
+    # never the placeholder in the public source tree.
+    src="$(chezmoi source-path "$file" 2>/dev/null)"
+    if [[ -n "$src" && "${src:t}" != create_* ]]; then
+      chezmoi edit --apply "$file" || vi "$file"
+      return
+    fi
   fi
+  vi "$file"
 }
 
 # --- Core Config Files ---
