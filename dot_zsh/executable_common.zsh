@@ -401,8 +401,25 @@ setopt HIST_SAVE_NO_DUPS
 setopt SHARE_HISTORY
 
 # --- Exports (cross-platform) ---
-export LANG="en_US.UTF-8"
-export LC_ALL="en_US.UTF-8"
+# Locale: en_US.UTF-8 where the host really has it (always on macOS). Minimal Linux
+# hosts/containers often don't generate it, and an unavailable LC_ALL (also forwarded by
+# ssh from the client) makes every child bash print "setlocale: cannot change locale".
+_dl_loc="en_US.UTF-8"
+if [[ "$OSTYPE" == linux* ]]; then
+    _dl_have="$(locale -a 2>/dev/null)"
+    if print -r -- "$_dl_have" | grep -qix 'en_US\.utf-\?8'; then _dl_loc="en_US.UTF-8"
+    elif print -r -- "$_dl_have" | grep -qix 'C\.utf-\?8'; then _dl_loc="C.UTF-8"
+    else _dl_loc=""
+    fi
+    unset _dl_have
+fi
+if [[ -n "$_dl_loc" ]]; then
+    export LANG="$_dl_loc" LC_ALL="$_dl_loc"
+else
+    unset LC_ALL
+    export LANG=C
+fi
+unset _dl_loc
 export YAZI_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/yazi"
 export YAZI_ZOXIDE_OPTS="--height=40% --layout=reverse --border=rounded --info=inline"
 export FZF_DEFAULT_OPTS="--height=40% --layout=reverse --border=rounded --info=inline"
