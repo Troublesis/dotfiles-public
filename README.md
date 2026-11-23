@@ -151,7 +151,9 @@ Mark a deliberate exception on a line with `gate:allow`.
   `glm`, `gpt`, `grok`, `cg`, `ds`, `rx`. They read their endpoints and tokens from `~/.zsh_secrets`.
 - **opencommit** (`oco`) is installed by default (npm global) and configured purely through
   `OCO_*` environment variables (`ai.zsh` / `.bashrc` / `oco.ps1`), with commits that omit the
-  scope and never auto-push. Only the endpoint and key are yours to supply.
+  scope and never auto-push. The same settings are written to `~/.opencommit`
+  (`modify_private_dot_opencommit`) — that file's existence is what stops `oco` from running its
+  first-run setup wizard, so a new machine only needs the key (and endpoint) in `~/.zsh_secrets`.
 - **`~/.zsh_secrets`** is created **once** as a commented, empty template
   (`create_private_dot_zsh_secrets`; chezmoi never overwrites it afterwards). Fill in real
   values by hand on each machine, e.g. `export _LOCAL_AI_TOKEN="…"`, `export OCO_API_URL="https://…/v1"`.

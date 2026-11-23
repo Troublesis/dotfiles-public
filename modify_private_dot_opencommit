@@ -1,0 +1,32 @@
+{{- /* chezmoi:modify-template */ -}}
+{{- /*
+Manage ~/.opencommit (opencommit / `oco` global config): every setting EXCEPT the credentials.
+Having this file is what stops `oco` from running its first-run setup wizard on a new machine.
+Enter the key (and the endpoint, if you use a custom one) in ~/.zsh_secrets as
+`export OCO_API_KEY=...` / `export OCO_API_URL=...`; environment variables override this file.
+OCO_API_URL is preserved from the existing file if one is already there; OCO_API_KEY is never
+written here (any such line oco itself adds is dropped on the next apply).
+*/ -}}
+{{- $url := regexFind "(?m)^OCO_API_URL=[^\r\n]*" .chezmoi.stdin -}}
+OCO_TOKENS_MAX_INPUT=32768
+OCO_MODEL=claude-haiku-5-5
+{{ if $url }}{{ $url }}
+{{ end -}}
+OCO_PROXY=undefined
+OCO_API_CUSTOM_HEADERS=undefined
+OCO_AI_PROVIDER=openai
+OCO_TOKENS_MAX_OUTPUT=2000
+OCO_DESCRIPTION=false
+OCO_EMOJI=false
+OCO_EMOJI_POSITION_BEFORE_DESCRIPTION=undefined
+OCO_LANGUAGE=en
+OCO_MESSAGE_TEMPLATE_PLACEHOLDER=$msg
+OCO_PROMPT_MODULE=conventional-commit
+OCO_ONE_LINE_COMMIT=false
+OCO_TEST_MOCK_TYPE=commit-message
+OCO_OMIT_SCOPE=true
+OCO_REASONING_MAX_TOKENS=undefined
+OCO_REASONING=undefined
+OCO_GITPUSH=false
+OCO_WHY=false
+OCO_HOOK_AUTO_UNCOMMENT=false
