@@ -61,6 +61,12 @@ that first if you can. The generic procedure is:
      --promptString "age recipient public key for the private overlay (leave blank for none)=<age-public-key>" \
      --promptString "GitHub noreply email for commits in this repo (leave blank to skip)=<id>+<user>@users.noreply.github.com"
    ```
+   If `chezmoi init` fails with `error calling promptBoolOnce: EOF`, the old config predates a
+   newer setting (e.g. `low_spec`): seed it too, e.g.
+   `--promptBool "Low-spec machine (trim zsh prompt/plugins)?=false"` (the prompt texts are in
+   `.chezmoi.toml.tmpl`), or run `chezmoi init` from a real terminal and answer the prompts.
+   The regenerated config pins `umask = 0o022`, so on a machine that was applied under another
+   umask (e.g. root with 077) the diff will list many mode-only changes (700→755): expected.
 5. **Review, then apply:** `chezmoi diff --exclude=scripts` (expect ~nothing: same files, now
    owned by two sources), then `chezmoi apply`. The overlay is applied by the last hook.
 6. **Verify:** `chezmoi status` is empty, `chezmoi update` pulls both repos, a new `zsh -l` starts clean.
