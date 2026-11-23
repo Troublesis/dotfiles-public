@@ -49,10 +49,11 @@ tool_present() {
   return 1
 }
 
-# 1. Age key + encrypted files
-if [[ ! -f "$KEY_FILE" ]]; then
-  add_note "Age key missing → encrypted files skipped
-    Affected: ~/.zsh_secrets, ~/.config/aicommit2/config.ini, ~/.ssh/* (if sync_ssh)
+# 1. Age key — only relevant when a private overlay (with encrypted files) is present;
+# a public-only machine has nothing encrypted, so it gets no key notes at all.
+OVERLAY_DIR="${DOTFILES_OVERLAY_DIR:-$HOME/.local/share/dotfiles-private}"
+if [[ -d "$OVERLAY_DIR/.git" && ! -f "$KEY_FILE" ]]; then
+  add_note "Age key missing → the private overlay's encrypted files were skipped
     Fix:  copy key.txt from another host:
             mkdir -p ~/.config/chezmoi && chmod 700 ~/.config/chezmoi
             scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
@@ -61,8 +62,8 @@ if [[ ! -f "$KEY_FILE" ]]; then
 fi
 
 # 1b. Age key present but malformed (e.g. mangled by copy/paste) → encrypted files skipped too
-if [[ -f "$KEY_FILE" ]] && ! grep -Eq '^AGE-SECRET-KEY-1[A-Z0-9]{58}[[:space:]]*$' "$KEY_FILE"; then
-  add_note "Age key INVALID → encrypted files skipped
+if [[ -d "$OVERLAY_DIR/.git" && -f "$KEY_FILE" ]] && ! grep -Eq '^AGE-SECRET-KEY-1[A-Z0-9]{58}[[:space:]]*$' "$KEY_FILE"; then
+  add_note "Age key INVALID → the private overlay's encrypted files were skipped
     $KEY_FILE has no well-formed 'AGE-SECRET-KEY-1…' line (74 chars, no spaces/line wraps).
     Fix:  re-copy it byte-for-byte (do not paste into a terminal):
             scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
