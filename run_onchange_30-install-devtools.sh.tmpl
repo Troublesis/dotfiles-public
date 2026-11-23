@@ -122,7 +122,27 @@ install_tpm() {
     git clone -q https://github.com/tmux-plugins/tpm "$tpm_dir"
   fi
 
-  [ -x "$tpm_dir/bin/install_plugins" ] && "$tpm_dir/bin/install_plugins"
+  [ -x "$tpm_dir/bin/install_plugins" ] || return 0
+  if [ ! -f "$HOME/.tmux.conf" ]; then
+    echo "[INFO] ~/.tmux.conf not deployed yet — skipping TPM plugin install (prefix + I inside tmux installs them later)"
+    return 0
+  fi
+
+  # TPM finds its plugin dir by asking a tmux server (`tmux start-server; show-environment -g
+  # TMUX_PLUGIN_MANAGER_PATH`). An already-running server that never loaded ~/.tmux.conf — or a
+  # host where the config cannot load — answers "unknown variable" and TPM aborts with
+  # "Tmux Plugin Manager not configured". So use a private throwaway server (own socket dir;
+  # TMUX unset so we never target the caller's session) and export the variable as a fallback.
+  # Short path under ~/tmp: unix socket paths are limited to ~100 bytes.
+  local sock rc
+  mkdir -p "$HOME/tmp"
+  sock="$(mktemp -d "$HOME/tmp/tpm.XXXXXX")" || return 1
+  ( unset TMUX
+    export TMUX_TMPDIR="$sock" TMUX_PLUGIN_MANAGER_PATH="$HOME/.tmux/plugins"
+    "$tpm_dir/bin/install_plugins" )
+  rc=$?
+  rm -rf "$sock"
+  return "$rc"
 }
 
 # ── Shared helpers (forge CLIs) ──────────────────────────────────────────────
