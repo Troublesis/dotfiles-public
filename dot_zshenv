@@ -1,4 +1,4 @@
-# XDG base dir: pin config home so tools (e.g. aicommit2) resolve a single
+# XDG base dir: pin config home so tools resolve a single
 # config path across Darwin + Linux. Set in zshenv so login, non-login, and
 # non-interactive/script shells all see it. macOS otherwise defaults to ~/Library.
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"

@@ -61,7 +61,6 @@ settings.toml
 *secrets*
 **/__pycache__
 *.pem
-.aicommit2
 .zsh/key.zsh
 Library/Application Support/Cursor
 

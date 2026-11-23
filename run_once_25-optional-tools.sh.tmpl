@@ -2,7 +2,7 @@
 #!/bin/bash
 # Optional-tools picker — Darwin + Linux.
 # Lets the user opt into tools that are NOT installed by default anywhere:
-#   agent-browser, VSCode (+ extensions), codex, herdr, aicommit2          (macOS + Linux)
+#   agent-browser, VSCode (+ extensions), codex, herdr                     (macOS + Linux)
 #   lazygit, lazydocker, ncdu, yadm, antigravity, cleanshot, voicestudio   (macOS only)
 # Not listed here because they are already handled elsewhere:
 #   tea  — core (Brewfile on macOS, run_onchange_30-install-devtools on Linux)
@@ -30,7 +30,6 @@ CATALOG=(
   "vscode|VSCode + exts|Visual Studio Code editor + managed extensions|all"
   "codex|codex|OpenAI Codex terminal coding agent|all"
   "herdr|herdr|Agent multiplexer that lives in your terminal|all"
-  "aicommit2|aicommit2|AI commit-message CLI (config in ~/.config/aicommit2 is always deployed)|all"
   "lazygit|lazygit|Terminal UI for git|darwin"
   "lazydocker|lazydocker|Terminal UI for Docker|darwin"
   "ncdu|ncdu|Disk usage analyzer (NCurses)|darwin"
@@ -138,11 +137,6 @@ install_herdr() {
       fi
       ;;
   esac
-}
-
-install_aicommit2() {
-  # Cross-platform via npm (no brew formula on Linux); needs npm on PATH.
-  have aicommit2 || npm_install_global aicommit2
 }
 
 install_yadm() { have yadm || brew install yadm; }   # macOS only
@@ -337,7 +331,6 @@ for key in $selected; do
     codex)         install_codex ;;
     herdr)         install_herdr ;;
     ncdu)          install_ncdu ;;
-    aicommit2)     install_aicommit2 ;;
     yadm)          install_yadm ;;
     antigravity)   install_antigravity ;;
     cleanshot)     install_cleanshot ;;

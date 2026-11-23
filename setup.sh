@@ -78,8 +78,7 @@ summary() {
     echo "  → Default shell is already zsh. Open a new terminal to confirm."
   fi
   if [ ! -f "$KEY_FILE" ]; then
-    echo "  → Copy age key, then re-apply to install encrypted files"
-    echo "    (.gitconfig.local, ~/.zsh_secrets, ~/.config/aicommit2/config.ini):"
+    echo "  → Only if you use a private overlay: copy its age key, then re-apply to install its encrypted files:"
     echo "      mkdir -p ~/.config/chezmoi && chmod 700 ~/.config/chezmoi"
     echo "      scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt"
     echo "      chmod 600 ~/.config/chezmoi/key.txt && chezmoi apply"
