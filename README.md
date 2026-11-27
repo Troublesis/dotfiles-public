@@ -16,7 +16,7 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/Troublesis/dotfiles-public
 
 # with a private overlay (secrets + personal data) on top
 DOTFILES_OVERLAY=git@github.com:<you>/<overlay-repo>.git DOTFILES_OVERLAY_BRANCH=<branch> \
-AGE_KEY_FROM=<user>@<host-that-has-the-key> \
+BW_SERVER_URL=https://<your-vault> \
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/Troublesis/dotfiles-public/main/bootstrap.sh)"
 ```
 
@@ -29,17 +29,17 @@ a machine that still has the old single-repo layout (see the migration guide bel
 |---|---|---|
 | 1 | Preflight | OS/arch, needs `curl` + `tar`, puts `~/.local/bin` on PATH |
 | 2 | chezmoi | existing → brew (macOS) → `get.chezmoi.io` → static **musl** build (old glibc) |
-| 3 | Age key | only with an overlay: validates `AGE-SECRET-KEY-1…`; installs from `AGE_KEY_FILE` / `AGE_KEY_FROM` / hidden prompt; a malformed key is moved aside, never used |
+| 3 | Bitwarden CLI | optional: installs `bw` (brew → npm → official binary) and offers to unlock the vault; any failure only warns, secrets then stay as commented placeholders |
 | 4 | Overlay access | only with `DOTFILES_OVERLAY`: ssh works → clone; else `GITHUB_TOKEN` one-time https clone; else a generated **read-only deploy key** you authorise |
-| 5 | `chezmoi init --apply` | clones this repo, seeds the age recipient (read from `key.txt`), installs packages, shell, tmux, tools; sets an ssh *push* URL so maintainers never hang on an https credential prompt |
+| 5 | `chezmoi init --apply` | clones this repo, installs packages, shell, tmux, tools; sets an ssh *push* URL so maintainers never hang on an https credential prompt |
 | 6 | Summary | what still needs attention + next steps |
 
 Environment variables (all optional): `DOTFILES_OVERLAY`, `DOTFILES_OVERLAY_BRANCH`,
-`DOTFILES_REPO`, `AGE_KEY_FROM=user@host`, `AGE_KEY_FILE=/path/key.txt`, `AGE_RECIPIENT=age1…`,
+`DOTFILES_REPO`, `BW_SERVER_URL`, `BOOTSTRAP_NO_BW=1`,
 `NOREPLY_EMAIL=<id>+<user>@users.noreply.github.com`, `GITHUB_TOKEN` (fine-grained, Contents: read
 on the overlay; used once via `GIT_ASKPASS`, never stored), `CHEZMOI_ARGS`, `BOOTSTRAP_YES=1`
 (no prompts). Full reference: the header of [`bootstrap.sh`](bootstrap.sh). The script contains no
-secrets; without an overlay/age key everything public still installs.
+secrets; without an overlay or Bitwarden everything public still installs.
 
 Deploy key for the overlay (only when no ssh access exists): the script prints the machine's new
 public key; authorise it from any machine with `gh repo deploy-key add key.pub -R <owner>/<overlay-repo> -t "$(hostname)"`.
@@ -55,7 +55,6 @@ Already have chezmoi? `chezmoi init --apply Troublesis/dotfiles-public` does the
 | Host class | `default`, `macbook`, `mac-studio`, `nas`, `code-server` (Windows is automatic) |
 | Is this the home machine? | switches a few home-network-only defaults |
 | Low-spec machine? | trims the zsh prompt/plugins |
-| age recipient | public key of your private overlay; blank = no encryption |
 | GitHub noreply email | commit identity used inside this checkout (see below) |
 
 ## Already using a private dotfiles repo? (instructions for humans and AI agents)
@@ -87,12 +86,9 @@ that first if you can. The generic procedure is:
 3. **Clone this repo as the source:**
    `git clone https://github.com/Troublesis/dotfiles-public.git ~/.local/share/chezmoi`
    then, if you will push from this machine: `git -C ~/.local/share/chezmoi remote set-url --push origin git@github.com:Troublesis/dotfiles-public.git` (an https push hangs on a credential prompt).
-4. **Regenerate the config.** The new template adds two prompts. Keep the existing age
-   recipient (read it from the old config: `chezmoi dump-config --format json | jq -r '(.age.recipients // [.age.recipient])[0]'`)
-   and pass both answers non-interactively; the existing `hostclass`/`is_home`/… answers are kept:
+4. **Regenerate the config.** The new template adds a prompt. Pass the answer non-interactively; the existing `hostclass`/`is_home`/… answers are kept:
    ```sh
    chezmoi init \
-     --promptString "age recipient public key for the private overlay (leave blank for none)=<age-public-key>" \
      --promptString "GitHub noreply email for commits in this repo (leave blank to skip)=<id>+<user>@users.noreply.github.com"
    ```
    If `chezmoi init` fails with `error calling promptBoolOnce: EOF`, the old config predates a
@@ -137,7 +133,7 @@ source when present.
 
 `tools/check-public.sh` runs as a `pre-commit` and `pre-push` hook and in CI:
 
-- **Generic layer (always):** forbidden file names (`*.age`, keys, `.env`), IPv4 literals,
+- **Generic layer (always):** forbidden file names (keys, `.env`, `*.age` leftovers), IPv4 literals,
   home-directory paths, email addresses, private-key headers, and `gitleaks`.
 - **Personal layer (local only):** regexes from `~/.config/dotfiles/denylist`, shipped by the
   private overlay. It is never stored here — a denylist in a public repo would leak its own words.

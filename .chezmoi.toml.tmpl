@@ -8,9 +8,6 @@
 {{- else -}}
 {{- $hostclass = promptChoiceOnce . "hostclass" "Host class" (list "default" "macbook" "mac-studio" "nas" "code-server") "default" -}}
 {{- end -}}
-{{- /* age_recipient: public key of the private overlay's age identity. Blank =
-     no encryption configured (a plain public-repo-only machine). */ -}}
-{{- $ageRecipient := promptStringOnce . "age_recipient" "age recipient public key for the private overlay (leave blank for none)" "" -}}
 {{- /* noreply_email: GitHub noreply address used as the commit identity inside this
      public repo's checkout (set as repo-local user.email by the git-hooks script). */ -}}
 {{- $noreplyEmail := promptStringOnce . "noreply_email" "GitHub noreply email for commits in this repo (leave blank to skip)" "" -}}
@@ -53,17 +50,9 @@ tempDir = "~/tmp"
 umask = 0o022
 {{- end }}
 scriptTempDir = "~/tmp"
-{{- if $ageRecipient }}
-encryption = "age"
-
-[age]
-  identity = "~/.config/chezmoi/key.txt"
-  recipients = [{{ $ageRecipient | quote }}]
-{{- end }}
 
 [data]
   hostclass = {{ $hostclass | quote }}
-  age_recipient = {{ $ageRecipient | quote }}
   noreply_email = {{ $noreplyEmail | quote }}
   email_type = {{ $emailType | quote }}
   is_home   = {{ $isHome }}

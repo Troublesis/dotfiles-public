@@ -2,13 +2,12 @@
 #!/bin/bash
 {{- if ne .chezmoi.os "windows" }}
 # End-of-bootstrap summary: surface anything that didn't fully complete
-# (missing age key → skipped encrypted files, failed packages, missing tools)
+# (secrets not filled from Bitwarden, failed packages, missing tools)
 # and tell the user exactly how to remediate each one.
 set -uo pipefail
 
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-bootstrap"
 STATE_FILE="$STATE_DIR/packages.state"
-KEY_FILE="$HOME/.config/chezmoi/key.txt"
 # Persistent marker (config, not cache) so the "optional extras" reminder is
 # shown only on the first bootstrap and survives a cache wipe. Cross-platform:
 # XDG_CONFIG_HOME on Linux, ~/.config fallback on macOS.
@@ -49,27 +48,14 @@ tool_present() {
   return 1
 }
 
-# 1. Age key — only relevant when a private overlay (with encrypted files) is present;
-# a public-only machine has nothing encrypted, so it gets no key notes at all.
-OVERLAY_DIR="${DOTFILES_OVERLAY_DIR:-$HOME/.local/share/dotfiles-private}"
-if [[ -d "$OVERLAY_DIR/.git" && ! -f "$KEY_FILE" ]]; then
-  add_note "Age key missing → the private overlay's encrypted files were skipped
-    Fix:  copy key.txt from another host:
-            mkdir -p ~/.config/chezmoi && chmod 700 ~/.config/chezmoi
-            scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
-            chmod 600 ~/.config/chezmoi/key.txt
-          then re-run:  chezmoi apply"
-fi
-
-# 1b. Age key present but malformed (e.g. mangled by copy/paste) → encrypted files skipped too
-if [[ -d "$OVERLAY_DIR/.git" && -f "$KEY_FILE" ]] && ! grep -Eq '^AGE-SECRET-KEY-1[A-Z0-9]{58}[[:space:]]*$' "$KEY_FILE"; then
-  add_note "Age key INVALID → the private overlay's encrypted files were skipped
-    $KEY_FILE has no well-formed 'AGE-SECRET-KEY-1…' line (74 chars, no spaces/line wraps).
-    Fix:  re-copy it byte-for-byte (do not paste into a terminal):
-            scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt
-            chmod 600 ~/.config/chezmoi/key.txt
-          verify:  age-keygen -y ~/.config/chezmoi/key.txt   # prints the age1… public key
-          then re-run:  chezmoi apply"
+# 1. Bitwarden secrets — only a note: secret-backed files fall back to commented/empty values.
+if ! command -v bw >/dev/null 2>&1; then
+  add_note "Bitwarden CLI (bw) not installed → secrets were NOT filled from your vault
+    Fix:  fill ~/.zsh_secrets by hand (alias: es), or install bw (brew install bitwarden-cli / npm i -g @bitwarden/cli)
+          then:  export BW_SESSION=\$(bw unlock --raw); rm ~/.zsh_secrets; chezmoi apply"
+elif [[ -z "${BW_SESSION:-}" ]]; then
+  add_note "Bitwarden vault locked → secrets were NOT filled (ssh keys skipped, ~/.zsh_secrets has commented placeholders)
+    Fix:  export BW_SESSION=\$(bw unlock --raw); rm ~/.zsh_secrets; chezmoi apply"
 fi
 
 # 2. Package install state

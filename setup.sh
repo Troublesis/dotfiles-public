@@ -2,15 +2,14 @@
 # Resilient chezmoi bootstrap — continues past failures and summarizes at the end.
 # Usage: bash setup.sh [git-repo-url]
 #
-# When age key is missing, encrypted files are skipped but all other setup
-# (packages, dev tools, shell config) still completes.
+# Secrets come from Bitwarden when `bw` is unlocked; otherwise they are skipped and every
+# other step (packages, dev tools, shell config) still completes.
 
 set -uo pipefail
 
 REPO="${1:-https://github.com/Troublesis/dotfiles-public.git}"
 CHEZMOI_SRC="$HOME/.local/share/chezmoi"
 CONFIG_FILE="$HOME/.config/chezmoi/chezmoi.toml"
-KEY_FILE="$HOME/.config/chezmoi/key.txt"
 BOOTSTRAP_STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-bootstrap"
 OPTIONAL_PKG_FILE="$BOOTSTRAP_STATE_DIR/optional-packages.list"
 FAILURES=()
@@ -52,15 +51,11 @@ summary() {
     done
     echo ""
     echo "Remediation:"
-    if [ ! -f "$KEY_FILE" ]; then
-      echo "  → Age key missing — encrypted files (SSH keys, secrets) were skipped."
-      echo "    Fix: copy key.txt from another host, then run 'chezmoi apply'."
-    fi
     echo "  → Re-run this script to retry failed steps (idempotent)."
   fi
 
   # Next-steps block — printed regardless of failure count so the user
-  # always knows how to enter zsh and (if applicable) drop in the age key.
+  # always knows how to enter zsh and unlock Bitwarden.
   echo ""
   echo "Next steps:"
   local zsh_bin login_shell
@@ -77,12 +72,7 @@ summary() {
   else
     echo "  → Default shell is already zsh. Open a new terminal to confirm."
   fi
-  if [ ! -f "$KEY_FILE" ]; then
-    echo "  → Only if you use a private overlay: copy its age key, then re-apply to install its encrypted files:"
-    echo "      mkdir -p ~/.config/chezmoi && chmod 700 ~/.config/chezmoi"
-    echo "      scp other-host:~/.config/chezmoi/key.txt ~/.config/chezmoi/key.txt"
-    echo "      chmod 600 ~/.config/chezmoi/key.txt && chezmoi apply"
-  fi
+  echo "  → Secrets: export BW_SESSION=\$(bw unlock --raw); rm -f ~/.zsh_secrets; chezmoi apply   (or fill ~/.zsh_secrets by hand)"
   echo "══════════════════════════════════════════════════════════════"
 }
 
@@ -308,7 +298,7 @@ command -v chezmoi >/dev/null 2>&1 || { log_fail "chezmoi not available — cann
 # ── Step 2: Initialize chezmoi (clone repo + generate config) ────────────────
 if [ ! -d "$CHEZMOI_SRC/.git" ]; then
   # chezmoi init --apply clones, renders config template, and applies.
-  # It may fail on encrypted files if key.txt is missing — that's OK.
+  # Secret-backed files fall back to empty values when bw is unavailable — that's OK.
   log_info "Initializing chezmoi from $REPO..."
   init_output="" init_rc=0
   init_output=$(chezmoi init --apply "$REPO" 2>&1) || init_rc=$?
@@ -320,14 +310,8 @@ if [ ! -d "$CHEZMOI_SRC/.git" ]; then
     log_warn "chezmoi init --apply failed before generating config"
     run_step "chezmoi init (clone only)" chezmoi init "$REPO"
   else
-    # Config exists but apply had errors (likely encrypted files)
-    encrypted_fails=$(echo "$init_output" | grep -ci "age\|decrypt\|key.txt" || true)
-    if [ "$encrypted_fails" -gt 0 ]; then
-      log_warn "chezmoi init — encrypted files skipped (age key missing at $KEY_FILE)"
-    else
-      log_fail "chezmoi init --apply"
-      echo "$init_output" | tail -10 | sed 's/^/    /'
-    fi
+    log_fail "chezmoi init --apply"
+    echo "$init_output" | tail -10 | sed 's/^/    /'
   fi
 fi
 
@@ -342,13 +326,8 @@ if [ -f "$CONFIG_FILE" ]; then
   if [ "$apply_rc" -eq 0 ]; then
     log_ok "chezmoi apply — all files applied"
   else
-    encrypted_fails=$(echo "$apply_output" | grep -ci "age\|decrypt\|key.txt" || true)
-    if [ "$encrypted_fails" -gt 0 ]; then
-      log_warn "chezmoi apply — encrypted files skipped (no age key)"
-    else
-      log_fail "chezmoi apply"
+    log_fail "chezmoi apply"
       echo "$apply_output" | tail -10 | sed 's/^/    /'
-    fi
   fi
 else
   log_warn "Config not generated — skipping chezmoi apply"

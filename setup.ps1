@@ -7,13 +7,12 @@
 #   & "$(chezmoi source-path)\setup.ps1"    # this script
 # (running this script directly also works: it clones if needed.)
 #
-# Order matters: the age key must exist BEFORE `chezmoi apply` starts, because
-# .chezmoiignore decides at the start of apply whether encrypted files are
-# skipped. So:
+# Secrets come from Bitwarden (bw CLI) when it is installed and unlocked; otherwise they are
+# skipped and everything else still applies. Order:
 #   1. execution policy + chezmoi            (no questions)
 #   2. chezmoi init  -> clone + config questions: is_home, SSH sync, SSH key
 #                       email, enable sshd         (all questions, no install yet)
-#   3. age key                               (last question)
+#   3. (no key prompt; Bitwarden is optional, see README)
 #   4. chezmoi apply                         (fully unattended from here)
 #
 # Tip: run from an *Administrator* PowerShell to avoid the one UAC prompt the
@@ -28,7 +27,6 @@ function Log-Info { param([string]$m) Write-Host "[INFO] $m" }
 function Log-Ok   { param([string]$m) Write-Host "[OK]   $m" }
 function Log-Warn { param([string]$m) Write-Warning $m }
 
-$keyFile = Join-Path $HOME '.config\chezmoi\key.txt'
 
 # --- 1. Execution policy + chezmoi ------------------------------------------
 if ((Get-ExecutionPolicy -Scope CurrentUser) -in 'Undefined', 'Restricted') {
@@ -57,44 +55,13 @@ Log-Info 'chezmoi init (answer the config questions)'
 chezmoi init $Repo
 if ($LASTEXITCODE -ne 0) { throw "chezmoi init failed (exit $LASTEXITCODE)" }
 
-# --- 2b. Age key ---------------------------------------------------------------
-# Accepts the AGE-SECRET-KEY-1... line pasted (input hidden), or a path to an
-# existing key.txt. Enter skips: encrypted files (secrets, tokens) are then
-# skipped until you add the key and run `chezmoi apply`.
-function Read-AgeKey {
-    $secret = Read-Host 'Age key: paste the AGE-SECRET-KEY-1... line, or a path to key.txt (Enter to skip)' -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
-    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr).Trim().Trim('"') }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-}
-
-function Save-AgeKey([string]$Value) {
-    New-Item -ItemType Directory -Force -Path (Split-Path $keyFile) | Out-Null
-    if (Test-Path -LiteralPath $Value -PathType Leaf) {
-        Copy-Item -LiteralPath $Value -Destination $keyFile -Force
-    } else {
-        [IO.File]::WriteAllText($keyFile, "$Value`n", (New-Object Text.UTF8Encoding($false)))
-    }
-    # Private to the current user, like chmod 600.
-    icacls $keyFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
-}
-
-if (Test-Path -LiteralPath $keyFile) {
-    Log-Ok "Age key present: $keyFile"
-} elseif ([Console]::IsInputRedirected) {
-    Log-Warn 'No interactive input - skipping age key prompt (encrypted files will be skipped).'
-} else {
-    for ($try = 1; $try -le 3; $try++) {
-        $v = Read-AgeKey
-        if (-not $v) { Log-Warn 'Age key skipped - encrypted files will be skipped.'; break }
-        if ((Test-Path -LiteralPath $v -PathType Leaf) -or $v -match '^AGE-SECRET-KEY-1[A-Z0-9]+$') {
-            Save-AgeKey $v
-            Log-Ok "Age key saved: $keyFile"
-            break
-        }
-        Log-Warn 'Not a valid AGE-SECRET-KEY-1... line or existing file path. Try again.'
-        if ($try -eq 3) { Log-Warn 'Giving up on the age key - encrypted files will be skipped.' }
-    }
+# --- 2b. Secrets --------------------------------------------------------------
+# No key prompt any more. If `bw` is installed and BW_SESSION is set, secret-backed files are
+# filled from the vault; otherwise they are skipped (fill them by hand later).
+if (-not (Get-Command bw -ErrorAction SilentlyContinue)) {
+    Log-Warn 'Bitwarden CLI (bw) not found - secret-backed files will be skipped. See README: Bitwarden secrets.'
+} elseif (-not $env:BW_SESSION) {
+    Log-Warn 'BW_SESSION not set - secret-backed files will be skipped. Run: $env:BW_SESSION = (bw unlock --raw)'
 }
 
 # --- 3. chezmoi apply (no more questions) -----------------------------------

@@ -7,7 +7,7 @@
 # Use that exact form (not `curl | sh`) so stdin stays your terminal for prompts.
 # Safe to re-run: every phase checks what is already done.
 #
-# Phases:  1 preflight → 2 chezmoi binary (+2b optional Bitwarden CLI) → 3 age key → 4 overlay access → 5 init+apply → 6 summary
+# Phases:  1 preflight → 2 chezmoi binary (+2b optional Bitwarden CLI) → 4 overlay access → 5 init+apply → 6 summary
 #
 # Two sources: the PUBLIC repo is the chezmoi source (~/.local/share/chezmoi); an optional
 # private OVERLAY repo (~/.local/share/dotfiles-private) is applied on top by the public repo's
@@ -17,17 +17,14 @@
 #   DOTFILES_REPO            public repo to clone (default https://github.com/Troublesis/dotfiles-public.git)
 #   DOTFILES_OVERLAY         git URL of your private overlay repo (omit = public-only machine)
 #   DOTFILES_OVERLAY_BRANCH  branch of the overlay to check out (default: the repo default)
-#   AGE_RECIPIENT            age PUBLIC key the overlay is encrypted to (default: read from key.txt)
 #   NOREPLY_EMAIL            GitHub noreply address for commits in the public checkout (default: blank)
-#   AGE_KEY_FILE             path to an existing age key.txt to install
-#   AGE_KEY_FROM             user@host to scp ~/.config/chezmoi/key.txt from
 #   GITHUB_TOKEN             read-only PAT for a ONE-TIME https clone of the overlay (never stored)
 #   CHEZMOI_ARGS             extra args for `chezmoi init --apply`
 #   BW_SERVER_URL            self-hosted Bitwarden/Vaultwarden URL for `bw config server` (default: bitwarden.com)
 #   BOOTSTRAP_NO_BW=1        do not install/log in to the Bitwarden CLI (secrets are then filled in by hand)
 #   BOOTSTRAP_YES=1          no prompts at all (chezmoi uses its defaults; key/deploy-key steps are skipped)
 #
-# This script contains no secrets. The age key is what unlocks the overlay's encrypted dotfiles.
+# This script contains no secrets. Secrets come from Bitwarden (phase 2b), not from encrypted files.
 
 set -u
 
@@ -38,10 +35,8 @@ OVERLAY_DIR="$HOME/.local/share/dotfiles-private"
 # owner/name of the overlay on GitHub (for the deploy-key instructions), derived from its URL
 GH_SLUG=$(printf '%s' "$OVERLAY" | sed -E 's#^(git@github.com:|https://github.com/|ssh://git@github.com/)##; s#\.git$##')
 SRC="$HOME/.local/share/chezmoi"
-KEY="$HOME/.config/chezmoi/key.txt"
 BIN="$HOME/.local/bin"
 DEPLOY_KEY="$HOME/.ssh/id_ed25519_dotfiles"
-KEY_RE='^AGE-SECRET-KEY-1[A-Z0-9]{58}[[:space:]]*$'
 WARNINGS=""
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -150,48 +145,6 @@ ensure_bw() {
   fi
 }
 
-# ── 3. age key ───────────────────────────────────────────────────────────────
-key_valid() { [ -f "$1" ] && grep -Eq "$KEY_RE" "$1"; }
-
-install_key_from() {   # $1 = file that contains an AGE-SECRET-KEY line
-  key_valid "$1" || return 1
-  mkdir -p "$(dirname "$KEY")" && chmod 700 "$(dirname "$KEY")"
-  ( umask 077; grep -E "$KEY_RE" "$1" | head -1 > "$KEY" )
-  chmod 600 "$KEY"
-}
-
-ensure_age_key() {
-  say "3/6 Age key (unlocks the overlay's encrypted dotfiles: ~/.zsh_secrets, tokens, ssh keys)"
-  if [ -z "$OVERLAY" ] && [ ! -f "$KEY" ]; then ok "public-only machine (no overlay) — no age key needed"; return; fi
-  if key_valid "$KEY"; then ok "valid key at $KEY"; return; fi
-  if [ -f "$KEY" ]; then
-    mv "$KEY" "$KEY.invalid.$(date +%s)"
-    warn "existing $KEY was malformed (wrapped/pasted?) — moved aside"
-  fi
-  if [ -n "${AGE_KEY_FILE:-}" ]; then
-    install_key_from "$AGE_KEY_FILE" && { ok "installed key from $AGE_KEY_FILE"; return; }
-    warn "AGE_KEY_FILE=$AGE_KEY_FILE has no valid AGE-SECRET-KEY line"
-  fi
-  if [ -n "${AGE_KEY_FROM:-}" ]; then
-    tmp=$(mktemp)
-    if scp -q "$AGE_KEY_FROM:.config/chezmoi/key.txt" "$tmp" 2>/dev/null && install_key_from "$tmp"; then
-      rm -f "$tmp"; ok "copied key from $AGE_KEY_FROM"; return
-    fi
-    rm -f "$tmp"; warn "could not fetch a valid key from $AGE_KEY_FROM"
-  fi
-  if interactive; then
-    printf '  Paste the single AGE-SECRET-KEY-1… line from another host (input hidden),\n' >/dev/tty
-    printf '  or press Enter to skip (encrypted files are skipped; add the key later).\n' >/dev/tty
-    ask_secret '  key> '
-    if [ -n "$REPLY" ]; then
-      tmp=$(mktemp); printf '%s\n' "$REPLY" > "$tmp"
-      if install_key_from "$tmp"; then rm -f "$tmp"; ok "key installed"; return; fi
-      rm -f "$tmp"; warn "that did not contain a valid AGE-SECRET-KEY-1 line (74 chars, no spaces)"
-    fi
-  fi
-  warn "no age key — encrypted files will be skipped. Later: scp other-host:~/.config/chezmoi/key.txt $KEY && chezmoi apply"
-}
-
 # ── 4. repo access (the dotfiles repo is private) ────────────────────────────
 ssh_github_ok() {   # true if ssh authenticates to GitHub ($1 = extra ssh args, $2 = target, default git@github.com)
   need ssh || return 1
@@ -269,11 +222,6 @@ run_chezmoi() {   # keep prompts working even when this script itself was piped
   if [ -t 0 ] || ! have_tty; then chezmoi "$@"; else chezmoi "$@" </dev/tty; fi
 }
 
-age_recipient() {   # public key: env, else the "# public key:" comment age-keygen writes into key.txt
-  [ -n "${AGE_RECIPIENT:-}" ] && { printf '%s' "$AGE_RECIPIENT"; return; }
-  [ -f "$KEY" ] && sed -n 's/^# public key: *//p' "$KEY" | head -1
-}
-
 init_apply() {
   say "5/6 chezmoi init --apply (installs packages, shell config, tools — can take a few minutes)"
   if [ -d "$SRC/.git" ]; then
@@ -284,8 +232,6 @@ init_apply() {
   fi
   set -- --force
   [ "${BOOTSTRAP_YES:-}" = 1 ] && set -- "$@" --promptDefaults
-  pub=$(age_recipient)
-  [ -n "$pub" ] && set -- "$@" --promptString "age recipient public key for the private overlay (leave blank for none)=$pub"
   [ -n "${NOREPLY_EMAIL:-}" ] && set -- "$@" --promptString "GitHub noreply email for commits in this repo (leave blank to skip)=$NOREPLY_EMAIL"
   # shellcheck disable=SC2086
   if [ -d "$SRC/.git" ]; then
@@ -317,7 +263,6 @@ main() {
   preflight
   ensure_chezmoi
   ensure_bw
-  ensure_age_key
   ensure_repo_access
   init_apply
   summary
