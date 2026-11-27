@@ -1,0 +1,17 @@
+{{- /* Usage: {{ $item := includeTemplate "bw-item" "chezmoi/<name>" | fromJson }}
+       Returns the vault item as JSON, or {} when bw is not ready / item missing (warns, never fails).
+       FAILS only if the exact name matches more than one item (names must be unique).
+       Exact-name match (not bw's substring `get`), so "a" never collides with "a_work". */ -}}
+{{- $name := . -}}
+{{- $out := dict -}}
+{{- if includeTemplate "bw-ready" . -}}
+{{- $hits := list -}}
+{{- range (output "bw" "list" "items" "--search" $name | fromJson) -}}
+{{- if eq .name $name }}{{ $hits = append $hits . }}{{ end -}}
+{{- end -}}
+{{- if eq (len $hits) 1 }}{{ $out = index $hits 0 -}}
+{{- else if gt (len $hits) 1 }}{{ fail (printf "Bitwarden: %d items are named %q - item names must be unique" (len $hits) $name) -}}
+{{- else }}{{ warnf "Bitwarden item %q not found (run `bw sync`?) - skipping its secrets" $name -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}

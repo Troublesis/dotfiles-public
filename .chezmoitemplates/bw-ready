@@ -1,0 +1,5 @@
+{{- /* Prints "1" when the Bitwarden CLI is installed AND unlocked, else nothing.
+       Use: {{ if includeTemplate "bw-ready" . }} ... {{ end }}   (never call `bw` outside this guard) */ -}}
+{{- if and (lookPath "bw") (env "BW_SESSION") -}}
+{{- if eq (output "bw" "status" | fromJson).status "unlocked" -}}1{{- end -}}
+{{- end -}}

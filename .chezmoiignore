@@ -1,5 +1,6 @@
 # --- Repo metadata: lives in the source tree, never deployed ------------------
 README.md
+AGENTS.md
 LICENSE
 tools/
 setup.sh
@@ -94,3 +95,11 @@ AppData/
 {{- if eq .chezmoi.os "windows" }}
 .config/alacritty/
 {{- end }}
+
+# --- Bitwarden-backed secrets: only deployed when bw is installed AND unlocked ---
+{{ if not (includeTemplate "bw-ready" .) -}}
+.ssh/id_ed25519
+.ssh/id_ed25519_work
+.ssh/id_rsa
+.ssh/nas_key
+{{ end -}}

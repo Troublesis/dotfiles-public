@@ -123,7 +123,7 @@ workflow, never bypass the gate (`SKIP_GATE=1`) to push.
 | `dot_zsh/`, `executable_dot_zshrc`, `dot_bashrc` | shell setup and generic aliases |
 | `run_once_*`, `run_onchange_*` | package/tool installers per OS |
 | `.chezmoiscripts/` | git-hook setup and the optional private-overlay hook |
-| `tools/check-public.sh` | the leak gate |
+| `tools/check-public.sh` | the leak gate |\n| `.chezmoitemplates/bw-*` | Bitwarden helpers (see Bitwarden secrets) |\n| `AGENTS.md` | rules for adding Bitwarden-backed templates |
 
 ## Optional private overlay
 
@@ -155,10 +155,34 @@ Mark a deliberate exception on a line with `gate:allow`.
   (`modify_private_dot_opencommit`) — that file's existence is what stops `oco` from running its
   first-run setup wizard, so a new machine only needs the key (and endpoint) in `~/.zsh_secrets`.
 - **`~/.zsh_secrets`** is created **once** as a commented, empty template
-  (`create_private_dot_zsh_secrets`; chezmoi never overwrites it afterwards). Fill in real
+  (`create_private_dot_zsh_secrets.tmpl`; filled from Bitwarden when bw is unlocked, otherwise every variable is commented out; chezmoi never overwrites it afterwards). Fill in real
   values by hand on each machine, e.g. `export _LOCAL_AI_TOKEN="…"`, `export OCO_API_URL="https://…/v1"`.
   Edit it with the `es` alias. No value is ever stored in this repo; the gate also blocks any
   `zsh_secrets`-named file or key material from being committed.
+
+## Bitwarden secrets (optional, with a no-bw fallback)
+
+Secrets (`~/.zsh_secrets` values, ssh keys) are **not** in this repo. They live in a Bitwarden-compatible vault
+(Bitwarden or self-hosted Vaultwarden) and are pulled by templates through the `bw` CLI at `chezmoi apply` time.
+Nothing touches the vault when you open a shell, so shell startup is unaffected.
+
+| Vault item | Used for |
+|---|---|
+| `chezmoi/zsh-secrets` (secure note, one hidden custom field per variable) | `~/.zsh_secrets` (written once; `create_`) |
+| `chezmoi/ssh/<file>.key` (SSH key items) | `~/.ssh/<file>` (only when bw is unlocked) |
+| `chezmoi/file/git-credentials`, `chezmoi/file/tea-config` (secure notes holding the whole file) | `~/.git-credentials`, `~/.config/tea/config.yml` (written once; skipped when bw is unavailable) |
+| `chezmoi/backup/*` (cloudflared tunnel creds, context7 token) | backup only, not deployed (machine-specific or app-refreshed) |
+
+**New machine:** `bootstrap.sh` phase 2b installs `bw` (brew → npm user prefix → official Linux binary) and offers to
+unlock the vault. Set `BW_SERVER_URL=https://<your-vault>` for a self-hosted server; `BOOTSTRAP_NO_BW=1` skips it.
+Manually: `bw config server <url> && bw login && export BW_SESSION=$(bw unlock --raw) && chezmoi apply`.
+
+**No bw / can't unlock (fallback):** the apply still succeeds. `~/.zsh_secrets` is created with every variable
+commented out (`# export NAME=`); fill them by hand (`es`). SSH keys are skipped, not written empty. When bw is available
+later: `export BW_SESSION=$(bw unlock --raw); rm ~/.zsh_secrets; chezmoi apply` regenerates the file from the vault.
+
+**Adding a secret to a template:** follow the rules in [`AGENTS.md`](AGENTS.md) (use the `bw-item`/`bw-ready` helpers,
+never call `bw` directly, unique non-overlapping item names, test the four states).
 
 ## Safety defaults
 

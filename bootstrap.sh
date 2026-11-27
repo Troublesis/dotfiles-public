@@ -7,7 +7,7 @@
 # Use that exact form (not `curl | sh`) so stdin stays your terminal for prompts.
 # Safe to re-run: every phase checks what is already done.
 #
-# Phases:  1 preflight → 2 chezmoi binary → 3 age key → 4 overlay access → 5 init+apply → 6 summary
+# Phases:  1 preflight → 2 chezmoi binary (+2b optional Bitwarden CLI) → 3 age key → 4 overlay access → 5 init+apply → 6 summary
 #
 # Two sources: the PUBLIC repo is the chezmoi source (~/.local/share/chezmoi); an optional
 # private OVERLAY repo (~/.local/share/dotfiles-private) is applied on top by the public repo's
@@ -23,6 +23,8 @@
 #   AGE_KEY_FROM             user@host to scp ~/.config/chezmoi/key.txt from
 #   GITHUB_TOKEN             read-only PAT for a ONE-TIME https clone of the overlay (never stored)
 #   CHEZMOI_ARGS             extra args for `chezmoi init --apply`
+#   BW_SERVER_URL            self-hosted Bitwarden/Vaultwarden URL for `bw config server` (default: bitwarden.com)
+#   BOOTSTRAP_NO_BW=1        do not install/log in to the Bitwarden CLI (secrets are then filled in by hand)
 #   BOOTSTRAP_YES=1          no prompts at all (chezmoi uses its defaults; key/deploy-key steps are skipped)
 #
 # This script contains no secrets. The age key is what unlocks the overlay's encrypted dotfiles.
@@ -101,6 +103,51 @@ ensure_chezmoi() {
   chezmoi_ok || install_chezmoi_musl
   chezmoi_ok || die "Could not install a working chezmoi. See https://www.chezmoi.io/install/"
   ok "installed chezmoi to $(command -v chezmoi)"
+}
+
+# ── 2b. Bitwarden CLI (optional) ─────────────────────────────────────────────
+# Secrets in templates come from Bitwarden through `bw`. Everything here is best-effort: if bw cannot be
+# installed or unlocked, templates fall back to empty/commented values and the rest still applies.
+bw_ok() { need bw && bw --version >/dev/null 2>&1; }
+
+install_bw() {
+  case "$OS" in
+    Darwin) need brew && brew install bitwarden-cli >/dev/null 2>&1 && bw_ok && return 0 ;;
+  esac
+  # npm works on any OS/arch (needs a reasonably recent node); user-level prefix, no sudo
+  if need npm; then npm install -g --prefix "$HOME/.local" @bitwarden/cli >/dev/null 2>&1 && bw_ok && return 0; fi
+  # official static binary (Linux x86_64 only)
+  if [ "$OS" = Linux ] && [ "$ARCH" = x86_64 ] && need unzip; then
+    tmp=$(mktemp -d) || return 1
+    if curl -fsSL --connect-timeout 20 "https://vault.bitwarden.com/download/?app=cli&platform=linux" -o "$tmp/bw.zip" \
+       && unzip -q -o "$tmp/bw.zip" -d "$tmp" && install -m 0755 "$tmp/bw" "$BIN/bw"; then rm -rf "$tmp"; bw_ok && return 0; fi
+    rm -rf "$tmp"
+  fi
+  return 1
+}
+
+bw_status() { bw status 2>/dev/null | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p'; }
+
+ensure_bw() {
+  say "2b/6 Bitwarden CLI (optional: fills secrets from your vault)"
+  if [ "${BOOTSTRAP_NO_BW:-}" = 1 ]; then ok "skipped (BOOTSTRAP_NO_BW=1) — fill ~/.zsh_secrets by hand"; return; fi
+  if bw_ok; then ok "bw $(bw --version 2>/dev/null) already installed"
+  elif install_bw; then ok "installed bw to $(command -v bw)"
+  else warn "could not install the Bitwarden CLI — secrets will NOT be filled from your vault; edit ~/.zsh_secrets by hand (alias: es), everything else installs normally"; return; fi
+  st=$(bw_status)
+  if [ "$st" = unauthenticated ] && [ -n "${BW_SERVER_URL:-}" ]; then bw config server "$BW_SERVER_URL" >/dev/null 2>&1 && ok "bw server set to $BW_SERVER_URL"; fi
+  [ -n "${BW_SESSION:-}" ] && [ "$(bw_status)" = unlocked ] && { ok "vault already unlocked"; return; }
+  if interactive; then
+    ask '  Unlock your vault now so secrets are filled in? [Y/n] '
+    case "$REPLY" in n|N|no) warn "vault not unlocked — secrets skipped. Later: export BW_SESSION=\$(bw unlock --raw); rm ~/.zsh_secrets; chezmoi apply"; return ;; esac
+    # prompts go to the terminal; only the session key is captured, never the password
+    if [ "$(bw_status)" = unauthenticated ]; then BW_SESSION=$(bw login --raw </dev/tty 2>/dev/tty) || BW_SESSION=""
+    else BW_SESSION=$(bw unlock --raw </dev/tty 2>/dev/tty) || BW_SESSION=""; fi
+    if [ -n "$BW_SESSION" ]; then export BW_SESSION; ok "vault unlocked for this run (session key is not stored)"
+    else unset BW_SESSION; warn "vault not unlocked — secrets skipped (see README: Bitwarden secrets)"; fi
+  else
+    warn "non-interactive: vault not unlocked — secrets skipped. Later: export BW_SESSION=\$(bw unlock --raw); rm ~/.zsh_secrets; chezmoi apply"
+  fi
 }
 
 # ── 3. age key ───────────────────────────────────────────────────────────────
@@ -269,6 +316,7 @@ summary() {
 main() {
   preflight
   ensure_chezmoi
+  ensure_bw
   ensure_age_key
   ensure_repo_access
   init_apply

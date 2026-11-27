@@ -1,0 +1,2 @@
+{{- /* tea CLI config. Whole file lives in vault note "chezmoi/file/tea-config". create_ because tea rewrites it itself. */ -}}
+{{- dig "notes" "" (includeTemplate "bw-item" "chezmoi/file/tea-config" | fromJson) -}}
