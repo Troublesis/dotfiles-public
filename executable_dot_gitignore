@@ -120,14 +120,6 @@ uv.lock
 .codex/version.json
 .codex/backup/
 
-# Gemini CLI
-.gemini/google_accounts.json
-.gemini/installation_id
-.gemini/oauth_creds.json
-.gemini/state.json
-.gemini/settings.json.orig
-.gemini/tmp/
-
 # HuggingFace CLI
 .cache/huggingface/
 
