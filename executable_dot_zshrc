@@ -114,8 +114,7 @@ append_path_if_dir \
     "$HOME/go/bin" \
     "$HOME/.opencode/bin" \
     "$HOME/.docker/bin" \
-    "$HOME/.lmstudio/bin" \
-    "$HOME/.antigravity/antigravity/bin"
+    "$HOME/.lmstudio/bin"
 
 # --- Zinit (plugin manager) ---
 ZINIT_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}/zinit/zinit.git"

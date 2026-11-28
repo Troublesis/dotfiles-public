@@ -14,7 +14,6 @@ export YAZI_FILE_ONE="$(first_command_path file || printf '/usr/bin/file')"
 export XDG_DATA_DIRS="/opt/homebrew/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 # NOTE: $BUN_INSTALL/bin is on PATH via ~/.zprofile (login shell).
-# Antigravity is in the consolidated interactive PATH in ~/.zshrc (phase 6).
 
 # --- macOS ssh-agent: load keys from Keychain on first interactive shell ---
 # `AddKeysToAgent yes` (in ~/.ssh/config) + `ssh-add --apple-use-keychain`

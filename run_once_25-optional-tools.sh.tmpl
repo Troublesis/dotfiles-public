@@ -3,7 +3,7 @@
 # Optional-tools picker — Darwin + Linux.
 # Lets the user opt into tools that are NOT installed by default anywhere:
 #   agent-browser, VSCode (+ extensions), codex, herdr                     (macOS + Linux)
-#   lazygit, lazydocker, ncdu, yadm, antigravity, cleanshot, voicestudio   (macOS only)
+#   lazygit, lazydocker, ncdu, yadm, cleanshot, voicestudio                (macOS only)
 # Not listed here because they are already handled elsewhere:
 #   tea  — core (Brewfile on macOS, run_onchange_30-install-devtools on Linux)
 #   btop — core on macOS (Brewfile); opt-in on Linux via optional-packages.list
@@ -34,7 +34,6 @@ CATALOG=(
   "lazydocker|lazydocker|Terminal UI for Docker|darwin"
   "ncdu|ncdu|Disk usage analyzer (NCurses)|darwin"
   "yadm|yadm|Yet Another Dotfiles Manager (legacy; dotfiles are managed by chezmoi)|darwin"
-  "antigravity|antigravity|Google Antigravity agentic IDE|darwin"
   "cleanshot|CleanShot X 4.8.10|Screen capture tool, pinned to licensed 4.8.10|darwin"
   "voicestudio|VoiceStudio|Local voice cloning/dubbing/dictation studio, ElevenLabs alternative|darwin"
 )
@@ -140,8 +139,6 @@ install_herdr() {
 }
 
 install_yadm() { have yadm || brew install yadm; }   # macOS only
-
-install_antigravity() { brew install --cask antigravity || log_warn "antigravity cask install failed"; }   # macOS only
 
 # CleanShot X is pinned to 4.8.10 (the licensed version; upstream cask only ships 5.x).
 # The cask file ships in ~/.zsh/casks and is served from a local tap.
@@ -332,7 +329,6 @@ for key in $selected; do
     herdr)         install_herdr ;;
     ncdu)          install_ncdu ;;
     yadm)          install_yadm ;;
-    antigravity)   install_antigravity ;;
     cleanshot)     install_cleanshot ;;
     voicestudio)   install_voicestudio ;;
     *)           log_warn "Unknown key in $OPTIONAL_TOOLS_FILE: $key" ;;
