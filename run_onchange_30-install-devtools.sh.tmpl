@@ -252,6 +252,29 @@ install_tea() {
 # from run_once_12-install-nas-tools.sh.tmpl instead, so skip Synology here to
 # avoid double-installing on an unsupported platform.
 install_claude_code() {
+  # macOS: install from npm into ~/.npm-global (prefix set by private_dot_npmrc.tmpl),
+  # NEVER via Homebrew. A brew-prefix copy (/opt/homebrew/lib/node_modules) goes stale
+  # and sits earlier on PATH; Claude Code 1.0.x crashes on Node >= 26 (SlowBuffer removed).
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    command -v npm >/dev/null 2>&1 || { echo "[WARN] npm missing — cannot install Claude Code"; return 1; }
+    local brew_prefix
+    for brew_prefix in /opt/homebrew /usr/local; do
+      if [[ -d "$brew_prefix/lib/node_modules/@anthropic-ai/claude-code" ]]; then
+        echo "[INFO] Removing Homebrew-prefix Claude Code ($brew_prefix)"
+        npm --prefix "$brew_prefix" uninstall -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
+      fi
+    done
+    mkdir -p "$HOME/.npm-global"
+    if [[ -x "$HOME/.npm-global/bin/claude" ]]; then
+      return 0
+    fi
+    echo "[INFO] Installing Claude Code CLI via npm (~/.npm-global)..."
+    npm install -g --prefix "$HOME/.npm-global" @anthropic-ai/claude-code@latest \
+      || { echo "[WARN] Claude Code npm install failed"; return 1; }
+    echo "[OK] Claude Code CLI installed ($("$HOME/.npm-global/bin/claude" --version 2>/dev/null | head -1))"
+    return 0
+  fi
+
   command -v claude >/dev/null 2>&1 && return 0
 
   # Synology detection mirrors dot_claude/hooks/private_executable_enforce-opencommit.sh:
@@ -278,9 +301,10 @@ install_npm_globals() {
   mkdir -p "$HOME/.npm-global"
   npm config set prefix "$HOME/.npm-global" >/dev/null 2>&1 || true
 
-  # NOTE: @anthropic-ai/claude-code is intentionally NOT here — install_claude_code
-  # installs the native build (~/.local/bin/claude). An npm global copy is redundant
-  # and makes the native CLI warn "Leftover npm global installation" on every startup.
+  # NOTE: @anthropic-ai/claude-code is intentionally NOT in this list — install_claude_code
+  # owns it: macOS uses npm into ~/.npm-global; Linux/WSL use the native build
+  # (~/.local/bin/claude). Mixing both makes the native CLI warn
+  # "Leftover npm global installation" on every startup.
   # @musistudio/claude-code-router bundles better-sqlite3 (a native module): on glibc < 2.28
   # there is no prebuilt binary and the distro compiler is too old, so every install fails
   # after ~40s of compiling. Skip it there instead of retrying and warning each time.
